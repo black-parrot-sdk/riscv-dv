@@ -396,6 +396,8 @@ class riscv_page_table_list#(satp_mode_t MODE = SV39) extends uvm_object;
     instr.push_back("fix_pte_ret:");
     // Recover the user mode GPR from kernal stack
     pop_gpr_from_kernel_stack(MSTATUS, MSCRATCH, cfg.mstatus_mprv, cfg.sp, cfg.tp, instr);
+    // Flush TLB to force synchronization
+    instr.push_back("sfence.vma x0, x0");
     instr.push_back("mret");
 
     foreach(instr[i]) begin
