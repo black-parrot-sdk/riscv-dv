@@ -280,6 +280,11 @@ class riscv_asm_program_gen extends uvm_object;
   virtual function void gen_program_end();
     // Use write_tohost to terminate spike simulation
     gen_section("write_tohost", {"sw gp, tohost, t5"});
+    // TODO: only single core supported now
+    instr_stream.push_back("li t0, 0;");
+    instr_stream.push_back("li t1, 0x03002000;");
+    instr_stream.push_back("sb t0, 0(t1);");
+    instr_stream.push_back("fence;");
     gen_section("_exit", {"j write_tohost"});
   endfunction
 
