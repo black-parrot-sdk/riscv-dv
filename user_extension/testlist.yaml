@@ -33,24 +33,24 @@
   description: >
     Arithmetic instruction test, no load/store/branch instructions
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=0
     +no_fence=1
     +no_data_page=1
     +no_branch_jump=1
     +boot_mode=m
     +no_csr_instr=1
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   rtl_test: core_base_test
 
 - test: riscv_machine_mode_rand_test
   description: >
     Machine mode random instruction test
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=5
     +boot_mode=m
   rtl_test: core_base_test
@@ -58,20 +58,20 @@
 - test: riscv_privileged_mode_rand_test
   description: >
     Random previliged mode test
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=5
   rtl_test: core_base_test
 
 - test: riscv_rand_instr_test
   description: >
     Random instruction stress test
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=5
     +directed_instr_0=riscv_load_store_rand_instr_stream,4
     +directed_instr_1=riscv_loop_instr,4
@@ -85,10 +85,10 @@
 - test: riscv_jump_stress_test
   description: >
     Stress back-to-back jump instruction test
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=5000
+    +instr_cnt=20000
     +num_of_sub_program=5
     +stream_name_0=riscv_jal_instr
     +stream_freq_0=10
@@ -97,10 +97,10 @@
 - test: riscv_loop_test
   description: >
     Random instruction stress test
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=5
     +directed_instr_1=riscv_loop_instr,20
   rtl_test: core_base_test
@@ -108,10 +108,10 @@
 - test: riscv_rand_jump_test
   description: >
     Jump among large number of sub-programs, stress testing iTLB operations.
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=10000
+    +instr_cnt=20000
     +num_of_sub_program=20
     +directed_instr_0=riscv_load_store_rand_instr_stream,8
   rtl_test: core_base_test
@@ -120,10 +120,10 @@
   description: >
     Test with different patterns of load/store instructions, stress test MMU
     operations.
-  iterations: 2
+  iterations: 10
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=5000
+    +instr_cnt=20000
     +num_of_sub_program=5
     +directed_instr_0=riscv_load_store_rand_instr_stream,40
     +directed_instr_1=riscv_load_store_hazard_instr_stream,40
@@ -146,7 +146,7 @@
   description: >
     Random instruction with FENCE disabled, used to test processor pipeline with
     less stall/flush operations caused by FENCE instruction.
-  iterations: 2
+  iterations: 10
   gen_test: riscv_rand_instr_test
   gen_opts: >
     +no_fence=1
@@ -155,7 +155,7 @@
 - test: riscv_sfence_exception_test
   description: >
     Random instruction test with S.FENCE exceptions
-  iterations: 2
+  iterations: 10
   gen_test: riscv_rand_instr_test
   gen_opts: >
     +allow_sfence_exception=1
@@ -167,7 +167,7 @@
     instruction and handle corresponding exception properly. An exception
     handling routine is designed to resume execution after illegal
     instruction exception.
-  iterations: 2
+  iterations: 10
   gen_test: riscv_rand_instr_test
   gen_opts: >
     +illegal_instr_ratio=5
@@ -177,7 +177,7 @@
   description: >
     HINT instruction test, verify the processor can detect HINT instruction
     treat it as NOP. No illegal instruction exception is expected
-  iterations: 2
+  iterations: 10
   gen_test: riscv_rand_instr_test
   gen_opts: >
     +hint_instr_ratio=5
@@ -186,7 +186,7 @@
 - test: riscv_full_interrupt_test
   description: >
     Random instruction test with complete interrupt handling
-  iterations: 2
+  iterations: 10
   gen_test: riscv_rand_instr_test
   gen_opts: >
     +enable_interrupt=1
