@@ -1,4 +1,7 @@
 
+BSG_CADENV_DIR ?=
+-include $(BSG_CADENV_DIR)/cadenv.mk
+
 export RISCV_GCC     ?= $(BP_EXTERNAL_DIR)/bin/riscv64-unknown-elf-gcc
 export RISCV_OBJCOPY ?= $(BP_EXTERNAL_DIR)/bin/riscv64-unknown-elf-objcopy
 
