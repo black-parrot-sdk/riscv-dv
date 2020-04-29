@@ -274,7 +274,7 @@ def gcc_compile(test_list, output_dir, isa, mabi, opts):
         continue
       prefix = ("%s/asm_tests/%s_%d" % (output_dir, test['test'], i))
       asm = prefix + ".S"
-      elf = prefix + ".o"
+      elf = prefix + ".riscv"
       binary = prefix + ".bin"
       test_isa = isa
       # gcc comilation
