@@ -26,14 +26,21 @@ class riscv_vector_cfg extends uvm_object;
     solve vtype before vl;
     solve vl before vstart;
     vstart <= vl;
-    vtype.vsew <= $clog2(VLEN/8);
-    vl <= (1 << ($clog2(VLEN/8) - vtype.vsew));
+    // TODO: Had to hack these constraints because old VCS does not support
+    // Error-[NYI-CSTR-SYS-FTC] NYI constraint: sys function calls
+    ///mnt/users/ssd0/no_backup/petrisko/pre-alpha-release/bp_common/test/src/riscv-dv/src/riscv_vector_cfg.sv, 36
+    //riscv_instr_pkg, "$clog2((VLEN / 8))"
+    //System function calls are not yet implemented in constraints.
+    //Remove the function call or if possible replace it with an integral state
+    //variable assigned in pre_randomize().
+    vtype.vsew <= 8; //$clog2(VLEN/8);
+    vl <= 64; //(1 << ($clog2(VLEN/8) - vtype.vsew));
   }
 
   // Basic constraint for initial bringup
   constraint bringup_c {
     vstart == 0;
-    vl == (1 << ($clog2(VLEN/8) - vtype.vsew));
+    vl == 64; //(1 << ($clog2(VLEN/8) - vtype.vsew));
     vtype.vlmul == 0;
     vtype.vediv == 0;
     vtype.vsew == 2;

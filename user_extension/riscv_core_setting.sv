@@ -41,6 +41,9 @@ mtvec_mode_t supported_interrupt_mode[$] = {DIRECT};
 // supported
 int max_interrupt_vector_num = 16;
 
+// Physical memory protection support
+bit support_pmp = 0;
+
 // Debug mode support
 bit support_debug_mode = 0;
 
@@ -49,6 +52,18 @@ bit support_umode_trap = 0;
 
 // Support sfence.vma instruction
 bit support_sfence = 1;
+
+// Support unaligned load/store
+bit support_unaligned_load_store = 0;
+
+// Parameter for vector extension
+parameter int VECTOR_EXTENSION_ENABLE = 0;
+parameter int VLEN = 512;
+parameter int ELEN = 64;
+parameter int SLEN = 64;
+
+// NUM_HARTS
+parameter int NUM_HARTS = 1;
 
 // ----------------------------------------------------------------------------
 // Previleged CSR implementation
@@ -60,14 +75,6 @@ privileged_reg_t implemented_csr[] = {
 `else
 parameter privileged_reg_t implemented_csr[] = {
 `endif
-    // User mode CSR
-    USTATUS,    // User status
-    UIE,        // User interrupt-enable register
-    UTVEC,      // User trap-handler base address
-    USCRATCH,   // Scratch register for user trap handlers
-    UEPC,       // User exception program counter
-    UCAUSE,     // User trap cause
-    UTVAL,      // User bad address or instruction
     // Supervisor mode CSR
     SSTATUS,    // Supervisor status
     SIE,        // Supervisor interrupt-enable register
