@@ -27,7 +27,7 @@ parameter satp_mode_t SATP_MODE = SV39;
 privileged_mode_t supported_privileged_mode[] = {USER_MODE, SUPERVISOR_MODE, MACHINE_MODE};
 
 // Unsupported instructions
-riscv_instr_name_t unsupported_instr[MULH, MULHSU, MULHU];
+riscv_instr_name_t unsupported_instr = {MULH, MULHSU, MULHU};
 
 // ISA supported by the processor
 riscv_instr_group_t supported_isa[$] = {RV32I, RV64I, RV32M, RV64M};
