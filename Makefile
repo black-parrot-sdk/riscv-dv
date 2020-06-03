@@ -15,7 +15,7 @@ RISCVDV_TEST_LIST = \
   riscv_no_fence_test \
   riscv_sfence_exception_test \
   riscv_illegal_instr_test \
-  riscv_full_interrupt_test$a
+  riscv_full_interrupt_test
 
 all: $(addprefix generate., $(RISCVDV_TEST_LIST))
 
