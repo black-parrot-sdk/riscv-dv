@@ -1,9 +1,6 @@
 
-BSG_CADENV_DIR ?=
--include $(BSG_CADENV_DIR)/cadenv.mk
-
-export RISCV_GCC     ?= $(BP_EXTERNAL_DIR)/bin/$(CROSS_COMPILE)gcc
-export RISCV_OBJCOPY ?= $(BP_EXTERNAL_DIR)/bin/$(CROSS_COMPILE)objcopy
+export RISCV_GCC     ?= $(CROSS_COMPILE)gcc
+export RISCV_OBJCOPY ?= $(CROSS_COMPILE)objcopy
 
 RISCVDV_TEST_LIST = \
   riscv_arithmetic_basic_test \
