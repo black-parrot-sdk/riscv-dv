@@ -27,7 +27,7 @@ parameter satp_mode_t SATP_MODE = SV39;
 privileged_mode_t supported_privileged_mode[] = {USER_MODE, SUPERVISOR_MODE, MACHINE_MODE};
 
 // Unsupported instructions
-riscv_instr_name_t unsupported_instr = {MULH, MULHSU, MULHU,
+riscv_instr_name_t unsupported_instr[] = {MULH, MULHSU, MULHU,
                                         AMOSWAP_W, AMOSWAP_D,
                                         AMOADD_W, AMOADD_D,
                                         AMOAND_W, AMOAND_D,
