@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 Google LLC
+ * Copyright 2020 Andes Technology Co., Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +62,11 @@ class riscv_asm_program_gen extends uvm_object;
 
   // This is the main function to generate all sections of the program.
   virtual function void gen_program();
+    // Prevent generation of PMP exception handling code where PMP is not supported
+    if (!support_pmp) begin
+      cfg.pmp_cfg.enable_pmp_exception_handler = 1'b0;
+    end
+
     instr_stream.delete();
     // Generate program header
     gen_program_header();
@@ -78,7 +84,7 @@ class riscv_asm_program_gen extends uvm_object;
       gen_init_section(hart);
       // If PMP is supported, we want to generate the associated trap handlers and the test_done
       // section at the start of the program so we can allow access through the pmpcfg0 CSR
-      if (support_pmp && !cfg.bare_program_mode) begin
+      if (riscv_instr_pkg::support_pmp && !cfg.bare_program_mode) begin
         gen_trap_handlers(hart);
         // Ecall handler
         gen_ecall_handler(hart);
@@ -88,7 +94,9 @@ class riscv_asm_program_gen extends uvm_object;
         gen_load_fault_handler(hart);
         // Store fault handler
         gen_store_fault_handler(hart);
-        gen_test_done();
+        if (hart == 0) begin
+          gen_test_done();
+        end
       end
       // Generate sub program
       gen_sub_program(hart, sub_program[hart], sub_program_name, cfg.num_of_sub_program);
@@ -116,10 +124,13 @@ class riscv_asm_program_gen extends uvm_object;
       instr_stream = {instr_stream, main_program[hart].instr_string_list};
       // If PMP is supported, need to jump from end of main program to test_done section at the end
       // of main_program, as the test_done will have moved to the beginning of the program
-      instr_stream = {instr_stream, $sformatf("%sj test_done", indent)};
+      instr_stream = {instr_stream,
+                      $sformatf("%sla x%0d, test_done", indent, cfg.scratch_reg),
+                      $sformatf("%sjalr x0, x%0d, 0", indent, cfg.scratch_reg)
+                     };
       // Test done section
       // If PMP isn't supported, generate this in the normal location
-      if (hart == 0 & !support_pmp) begin
+      if (hart == 0 & !riscv_instr_pkg::support_pmp) begin
         gen_test_done();
       end
       // Shuffle the sub programs and insert to the instruction stream
@@ -129,10 +140,6 @@ class riscv_asm_program_gen extends uvm_object;
       // Program end
       gen_program_end(hart);
       if (!cfg.bare_program_mode) begin
-        if (!riscv_instr_pkg::support_pmp) begin
-          // Privileged mode switch routine
-          gen_privileged_mode_switch_routine(hart);
-        end
         // Generate debug rom section
         if (riscv_instr_pkg::support_debug_mode) begin
           gen_debug_rom(hart);
@@ -320,14 +327,16 @@ class riscv_asm_program_gen extends uvm_object;
     if (cfg.disable_compressed_instr) begin
       instr_stream.push_back(".option norvc;");
     end
-    str = {"csrr x5, mhartid"};
+    str.push_back(".include \"user_init.s\"");
+    str.push_back($sformatf("csrr x5, 0x%0x", MHARTID));
     for (int hart = 0; hart < cfg.num_of_harts; hart++) begin
       str = {str, $sformatf("li x6, %0d", hart),
                   $sformatf("beq x5, x6, %0df", hart)};
     end
     gen_section("_start", str);
     for (int hart = 0; hart < cfg.num_of_harts; hart++) begin
-      instr_stream.push_back($sformatf("%0d: j h%0d_start", hart, hart));
+      instr_stream.push_back($sformatf("%0d: la x%0d, h%0d_start", hart, cfg.scratch_reg, hart));
+      instr_stream.push_back($sformatf("jalr x0, x%0d, 0", cfg.scratch_reg));
     end
   endfunction
 
@@ -414,19 +423,19 @@ class riscv_asm_program_gen extends uvm_object;
     string str;
     str = format_string(get_label("init:", hart), LABEL_STR_LEN);
     instr_stream.push_back(str);
+    if (cfg.enable_floating_point) begin
+      init_floating_point_gpr();
+    end
     init_gpr();
     // Init stack pointer to point to the end of the user stack
     str = {indent, $sformatf("la x%0d, %0suser_stack_end", cfg.sp, hart_prefix(hart))};
     instr_stream.push_back(str);
-    if (cfg.enable_floating_point) begin
-      init_floating_point_gpr();
-    end
     if (cfg.enable_vector_extension) begin
-      init_vector_engine();
+      randomize_vec_gpr_and_csr();
     end
     core_is_initialized();
     gen_dummy_csr_write(); // TODO add a way to disable xStatus read
-    if (support_pmp) begin
+    if (riscv_instr_pkg::support_pmp) begin
       str = {indent, "j main"};
       instr_stream.push_back(str);
     end
@@ -438,7 +447,7 @@ class riscv_asm_program_gen extends uvm_object;
     misa[XLEN-1:XLEN-2] = (XLEN == 32) ? 2'b01 :
                           (XLEN == 64) ? 2'b10 : 2'b11;
     if (cfg.check_misa_init_val) begin
-      instr_stream.push_back({indent, "csrr x15, misa"});
+      instr_stream.push_back({indent, $sformatf("csrr x15, 0x%0x", MISA)});
     end
     foreach (supported_isa[i]) begin
       case (supported_isa[i]) inside
@@ -449,8 +458,10 @@ class riscv_asm_program_gen extends uvm_object;
         RV32B, RV64B         : misa[MISA_EXT_B] = 1'b1;
         RV32F, RV64F, RV32FC : misa[MISA_EXT_F] = 1'b1;
         RV32D, RV64D, RV32DC : misa[MISA_EXT_D] = 1'b1;
-        RV32V, RV64V         : misa[MISA_EXT_V] = 1'b1;
+        RVV                  : misa[MISA_EXT_V] = 1'b1;
         RV32X, RV64X         : misa[MISA_EXT_X] = 1'b1;
+        RV32ZBA, RV32ZBB, RV32ZBC, RV32ZBS,
+        RV64ZBA, RV64ZBB, RV64ZBC, RV64ZBS : ; // No Misa bit for Zb* extensions
         default : `uvm_fatal(`gfn, $sformatf("%0s is not yet supported",
                                    supported_isa[i].name()))
       endcase
@@ -458,8 +469,8 @@ class riscv_asm_program_gen extends uvm_object;
     if (SUPERVISOR_MODE inside {supported_privileged_mode}) begin
       misa[MISA_EXT_S] = 1'b1;
     end
-    instr_stream.push_back({indent, $sformatf("li x%0d, 0x%0x",cfg.gpr[0], misa)});
-    instr_stream.push_back({indent, $sformatf("csrw misa, x%0d",cfg.gpr[0])});
+    instr_stream.push_back({indent, $sformatf("li x%0d, 0x%0x", cfg.gpr[0], misa)});
+    instr_stream.push_back({indent, $sformatf("csrw 0x%0x, x%0d", MISA, cfg.gpr[0])});
   endfunction
 
   // Write to the signature_addr with values to indicate to the core testbench
@@ -518,7 +529,7 @@ class riscv_asm_program_gen extends uvm_object;
     string str;
     bit [DATA_WIDTH-1:0] reg_val;
     // Init general purpose registers with random values
-    for(int i = 0; i < 32; i++) begin
+    for(int i = 0; i < NUM_GPR; i++) begin
       if (i inside {cfg.sp, cfg.tp}) continue;
       `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(reg_val,
         reg_val dist {
@@ -533,38 +544,161 @@ class riscv_asm_program_gen extends uvm_object;
     end
   endfunction
 
+  // Initialize vector general purpose registers
+  virtual function void init_vec_gpr();
+    int SEW;
+    int LMUL;
+    int EDIV = 1;
+    int len = (ELEN <= XLEN) ? ELEN : XLEN;
+    int num_elements = VLEN / len;
+    if (!(RVV inside {supported_isa})) return;
+    LMUL = 1;
+    SEW = (ELEN <= XLEN) ? ELEN : XLEN;
+    instr_stream.push_back($sformatf("li x%0d, %0d", cfg.gpr[1], cfg.vector_cfg.vl));
+    instr_stream.push_back($sformatf("%svsetvli x%0d, x%0d, e%0d, m%0d, d%0d",
+                                     indent, cfg.gpr[0], cfg.gpr[1], SEW, LMUL, EDIV));
+    instr_stream.push_back("vec_reg_init:");
+
+    // Vector registers will be initialized using one of the following three methods
+    case (cfg.vreg_init_method)
+      SAME_VALUES_ALL_ELEMS: begin
+        for (int v = 0; v < NUM_VEC_GPR; v++) begin
+          instr_stream.push_back($sformatf("%0svmv.v.x v%0d, x%0d", indent, v, v));
+        end
+      end
+      RANDOM_VALUES_VMV: begin
+        for (int v = 0; v < NUM_VEC_GPR; v++) begin
+          for (int e = 0; e < num_elements; e++) begin
+            if (e > 0) instr_stream.push_back($sformatf("%0svmv.v.v v0, v%0d", indent, v));
+            instr_stream.push_back($sformatf("%0sli x%0d, 0x%0x",
+                                             indent, cfg.gpr[0], $urandom_range(0, 2 ** SEW - 1)));
+            if (v > 0) begin
+              instr_stream.push_back($sformatf("%0svslide1up.vx v%0d, v0, x%0d",
+                                               indent, v, cfg.gpr[0]));
+            end else begin
+              instr_stream.push_back($sformatf("%0svslide1up.vx v%0d, v1, x%0d",
+                                               indent, v, cfg.gpr[0]));
+            end
+          end
+        end
+      end
+      RANDOM_VALUES_LOAD: begin
+        // Select those memory regions that are big enough for load a vreg
+        mem_region_t valid_mem_region [$];
+        foreach (cfg.mem_region[i])
+          if (cfg.mem_region[i].size_in_bytes * 8 >= VLEN) valid_mem_region.push_back(cfg.mem_region[i]);
+
+        if (valid_mem_region.size() == 0)
+          `uvm_fatal(`gfn, "Couldn't find a memory region big enough to initialize the vector registers")
+
+        for (int v = 0; v < NUM_VEC_GPR; v++) begin
+          int region = $urandom_range(0, valid_mem_region.size()-1);
+          instr_stream.push_back($sformatf("%0sla t0, %0s", indent, valid_mem_region[region].name));
+          instr_stream.push_back($sformatf("%0svle.v v%0d, (t0)", indent, v));
+        end
+      end
+    endcase
+  endfunction
+
   // Initialize floating point general purpose registers
   virtual function void init_floating_point_gpr();
     int int_gpr;
     string str;
-    // TODO: Initialize floating point GPR with more interesting numbers
-    for(int i = 0; i < 32; i++) begin
-      int_gpr = $urandom_range(0, 31);
-      // Use a random integer GPR to initialize floating point GPR
-      if (RV64F inside {supported_isa}) begin
-        str = $sformatf("%0sfcvt.d.l f%0d, x%0d", indent, i, int_gpr);
-      end else begin
-        str = $sformatf("%0sfcvt.s.w f%0d, x%0d", indent, i, int_gpr);
-      end
-      instr_stream.push_back(str);
+    for(int i = 0; i < NUM_FLOAT_GPR; i++) begin
+      randcase
+        1: init_floating_point_gpr_with_spf(i);
+        RV64D inside {supported_isa}: init_floating_point_gpr_with_dpf(i);
+      endcase
     end
     // Initialize rounding mode of FCSR
     str = $sformatf("%0sfsrmi %0d", indent, cfg.fcsr_rm);
     instr_stream.push_back(str);
   endfunction
 
-  // Initialize vector registers
-  virtual function void init_vector_engine();
-    string str[$];
-    // Initialize vtype, vl
-    str = {str, $sformatf("li x%0d, %0d", cfg.gpr[1], cfg.vector_cfg.vl),
-                $sformatf("vsetvli x%0d, x%0d, e%0d",
-                          cfg.gpr[0], cfg.gpr[1], 8 * (2 ** cfg.vector_cfg.vtype.vsew))};
-    for(int i = 0; i < 32; i++) begin
-      // Use integer register to initialize vector register
-      str = {str, $sformatf("vmv.v.x v%0d, x%0d", i, i)};
+  // get instructions initialize floating_point_gpr with single precision floating value
+  virtual function void init_floating_point_gpr_with_spf(int int_floating_gpr);
+    string str;
+    bit [31:0] imm = get_rand_spf_value();
+    str = $sformatf("%0sli x%0d, %0d", indent, cfg.gpr[0], imm);
+    instr_stream.push_back(str);
+    str = $sformatf("%0sfmv.w.x f%0d, x%0d", indent, int_floating_gpr, cfg.gpr[0]);
+    instr_stream.push_back(str);
+  endfunction
+
+  // get instructions initialize floating_point_gpr with double precision floating value
+  virtual function void init_floating_point_gpr_with_dpf(int int_floating_gpr);
+    string str;
+    bit [63:0] imm = get_rand_dpf_value();
+    int int_gpr1 = cfg.gpr[0];
+    int int_gpr2 = cfg.gpr[1];
+
+    str = $sformatf("%0sli x%0d, %0d", indent, int_gpr1, imm[63:32]);
+    instr_stream.push_back(str);
+    // shift to upper 32bits
+    repeat (2) begin
+      str = $sformatf("%0sslli x%0d, x%0d, 16", indent, int_gpr1, int_gpr1);
+      instr_stream.push_back(str);
     end
-    instr_stream = {instr_stream, str};
+    str = $sformatf("%0sli x%0d, %0d", indent, int_gpr2, imm[31:0]);
+    instr_stream.push_back(str);
+    str = $sformatf("%0sor x%0d, x%0d, x%0d", indent, int_gpr2, int_gpr2, int_gpr1);
+    instr_stream.push_back(str);
+    str = $sformatf("%0sfmv.d.x f%0d, x%0d", indent, int_floating_gpr, int_gpr2);
+    instr_stream.push_back(str);
+  endfunction
+
+  // get a random single precision floating value
+  virtual function bit [XLEN-1:0] get_rand_spf_value();
+    bit [31:0] value;
+
+    randcase
+      // infinity
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value inside {32'h7f80_0000, 32'hff80_0000};)
+      // largest
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value inside {32'h7f7f_ffff, 32'hff7f_ffff};)
+      // zero
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value inside {32'h0000_0000, 32'h8000_0000};)
+      // NaN
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value inside {32'h7f80_0001, 32'h7fc0_0000};)
+      // normal
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value[30:SINGLE_PRECISION_FRACTION_BITS] > 0;)
+      // subnormal
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+                                            value[30:SINGLE_PRECISION_FRACTION_BITS] == 0;)
+    endcase
+    return value;
+  endfunction
+
+  // get a random double precision floating value
+  virtual function bit [XLEN-1:0] get_rand_dpf_value();
+    bit [63:0] value;
+
+    randcase
+      // infinity
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value inside {64'h7ff0_0000_0000_0000, 64'hfff0_0000_0000_0000};)
+      // largest
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value inside {64'h7fef_ffff_ffff_ffff, 64'hffef_ffff_ffff_ffff};)
+      // zero
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value inside {64'h0000_0000_0000_0000, 64'h8000_0000_0000_0000};)
+      // NaN
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value inside {64'h7ff0_0000_0000_0001, 64'h7ff8_0000_0000_0000};)
+      // normal
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value[62:DOUBLE_PRECISION_FRACTION_BITS] > 0;)
+      // subnormal
+      1: `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(value,
+             value[62:DOUBLE_PRECISION_FRACTION_BITS] == 0;)
+    endcase
+    return value;
   endfunction
 
   // Generate "test_done" section, test is finished by an ECALL instruction
@@ -584,19 +718,19 @@ class riscv_asm_program_gen extends uvm_object;
   // TB can check the GPR value for this memory location to compare with expected value generated
   // by the ISA simulator. If the processor doesn't have a good tracer unit, it might not be
   // possible to compare the GPR value after each instruction execution.
-  virtual function void gen_register_dump();
+  virtual function void gen_register_dump(ref string instr[$]);
     string str;
     // Load base address
-    str = {indent, $sformatf("la x%0d, _start", cfg.gpr[0])};
-    instr_stream.push_back(str);
+    str = $sformatf("la x%0d, _start", cfg.gpr[0]);
+    instr.push_back(str);
     // Generate sw/sd instructions
     for(int i = 0; i < 32; i++) begin
       if(XLEN == 64) begin
-        str = {indent, $sformatf("sd x%0d, %0d(x%0d)", i, i*(XLEN/8), cfg.gpr[0])};
+        str = $sformatf("sd x%0d, %0d(x%0d)", i, i*(XLEN/8), cfg.gpr[0]);
       end else begin
-        str = {indent, $sformatf("sw x%0d, %0d(x%0d)", i, i*(XLEN/8), cfg.gpr[0])};
+        str = $sformatf("sw x%0d, %0d(x%0d)", i, i*(XLEN/8), cfg.gpr[0]);
       end
-      instr_stream.push_back(str);
+      instr.push_back(str);
     end
   endfunction
 
@@ -618,6 +752,8 @@ class riscv_asm_program_gen extends uvm_object;
     trap_vector_init(hart);
     // Setup PMP CSRs
     setup_pmp(hart);
+    // Generate PMPADDR write test sequence
+    gen_pmp_csr_write(hart);
     // Initialize PTE (link page table based on their real physical address)
     if(cfg.virtual_addr_translation_on) begin
       page_table_list.process_page_table(instr);
@@ -625,12 +761,10 @@ class riscv_asm_program_gen extends uvm_object;
     end
     // Setup mepc register, jump to init entry
     setup_epc(hart);
-    // Move privileged mode support to the "safe" section of the program
-    // if PMP is supported
-    if (riscv_instr_pkg::support_pmp) begin
-      // Privileged mode switch routine
-      gen_privileged_mode_switch_routine(hart);
-    end
+    // Initialization of any implementation-specific custom CSRs
+    setup_custom_csrs(hart);
+    // Setup initial privilege mode
+    gen_privileged_mode_switch_routine(hart);
   endfunction
 
   virtual function void gen_privileged_mode_switch_routine(int hart);
@@ -690,10 +824,7 @@ class riscv_asm_program_gen extends uvm_object;
                $sformatf("srli x%0d, x%0d, %0d", cfg.gpr[0], cfg.gpr[0], XLEN - 12)};
     end
     mode_name = cfg.init_privileged_mode.name();
-    instr.push_back($sformatf("csrw mepc, x%0d", cfg.gpr[0]));
-    if (!riscv_instr_pkg::support_pmp) begin
-      instr.push_back($sformatf("j %0sinit_%0s", hart_prefix(hart), mode_name.tolower()));
-    end
+    instr.push_back($sformatf("csrw 0x%0x, x%0d", MEPC, cfg.gpr[0]));
     gen_section(get_label("mepc_setup", hart), instr);
   endfunction
 
@@ -701,10 +832,45 @@ class riscv_asm_program_gen extends uvm_object;
   virtual function void setup_pmp(int hart);
     string instr[$];
     if (riscv_instr_pkg::support_pmp) begin
-      cfg.pmp_cfg.setup_pmp();
-      cfg.pmp_cfg.gen_pmp_instr('{cfg.scratch_reg, cfg.gpr[0]}, instr);
+      if(cfg.pmp_cfg.suppress_pmp_setup) begin
+        // When PMP setup is suppressed generate a configuration that gives unrestricted access to
+        // all memory for both M and U mode
+        cfg.pmp_cfg.gen_pmp_enable_all(cfg.scratch_reg, instr);
+      end else begin
+        cfg.pmp_cfg.setup_pmp();
+        cfg.pmp_cfg.gen_pmp_instr('{cfg.scratch_reg, cfg.gpr[0]}, instr);
+      end
+
       gen_section(get_label("pmp_setup", hart), instr);
     end
+  endfunction
+
+  // Generates a directed stream of instructions to write random values to all supported
+  // pmpaddr CSRs to test write accessibility.
+  // The original CSR values are restored afterwards.
+  virtual function void gen_pmp_csr_write(int hart);
+    string instr[$];
+    if (riscv_instr_pkg::support_pmp && cfg.pmp_cfg.enable_write_pmp_csr) begin
+      cfg.pmp_cfg.gen_pmp_write_test({cfg.scratch_reg, cfg.pmp_reg[0]}, instr);
+      gen_section(get_label("pmp_csr_write_test", hart), instr);
+    end
+  endfunction
+
+  // Handles creation of a subroutine to initialize any custom CSRs
+  virtual function void setup_custom_csrs(int hart);
+    string instr[$];
+    init_custom_csr(instr);
+    gen_section(get_label("custom_csr_setup", hart), instr);
+  endfunction
+
+  // This function should be overridden in the riscv_asm_program_gen extended class
+  // corresponding to the RTL implementation if it has any custom CSRs defined.
+  //
+  // All that needs to be done in the overridden function is to manually create
+  // the instruction strings to set up any custom CSRs and then to push those strings
+  // into the instr queue.
+  virtual function void init_custom_csr(ref string instr[$]);
+    instr.push_back("nop");
   endfunction
 
   //---------------------------------------------------------------------------------------
@@ -798,7 +964,7 @@ class riscv_asm_program_gen extends uvm_object;
   virtual function void gen_all_trap_handler(int hart);
     string instr[$];
     // If PMP isn't supported, generate the relevant trap handler sections as per usual
-    if (!support_pmp) begin
+    if (!riscv_instr_pkg::support_pmp) begin
       gen_trap_handlers(hart);
       // Ecall handler
       gen_ecall_handler(hart);
@@ -938,7 +1104,9 @@ class riscv_asm_program_gen extends uvm_object;
                        cfg.gpr[0], cfg.gpr[1], hart_prefix(hart)),
              // Skip checking tval for illegal instruction as it's implementation specific
              $sformatf("csrr x%0d, 0x%0x # %0s", cfg.gpr[1], tval, tval.name()),
-             "1: jal x1, test_done "
+             // use JALR to jump to test_done.
+             $sformatf("1: la x%0d, test_done", cfg.scratch_reg),
+             $sformatf("jalr x1, x%0d, 0", cfg.scratch_reg)
            };
     gen_section(get_label($sformatf("%0smode_exception_handler", mode), hart), instr);
   endfunction
@@ -984,7 +1152,8 @@ class riscv_asm_program_gen extends uvm_object;
       // Jump to commmon interrupt handling routine
       intr_handler = {intr_handler,
                       $sformatf("j %0s%0smode_intr_handler", hart_prefix(hart), mode),
-                      "1: j test_done"};
+                      $sformatf("1: la x%0d, test_done", cfg.scratch_reg),
+                      $sformatf("jalr x0, x%0d, 0", cfg.scratch_reg)};
       gen_section(get_label($sformatf("%0smode_intr_vector_%0d", mode, i), hart), intr_handler);
     end
   endfunction
@@ -993,14 +1162,12 @@ class riscv_asm_program_gen extends uvm_object;
   // It does some clean up like dump GPRs before communicating with host to terminate the test.
   // User can extend this function if some custom clean up routine is needed.
   virtual function void gen_ecall_handler(int hart);
-    string str;
-    str = format_string(get_label("ecall_handler:", hart), LABEL_STR_LEN);
-    instr_stream.push_back(str);
-    dump_perf_stats();
-    gen_register_dump();
-    str = format_string(" ", LABEL_STR_LEN);
-    str = {str, "j write_tohost"};
-    instr_stream.push_back(str);
+    string instr[$];
+    dump_perf_stats(instr);
+    gen_register_dump(instr);
+    instr.push_back($sformatf("la x%0d, write_tohost", cfg.scratch_reg));
+    instr.push_back($sformatf("jalr x0, x%0d, 0", cfg.scratch_reg));
+    gen_section(get_label("ecall_handler", hart), instr);
   endfunction
 
   // Ebreak trap handler
@@ -1016,9 +1183,9 @@ class riscv_asm_program_gen extends uvm_object;
     gen_signature_handshake(instr, CORE_STATUS, EBREAK_EXCEPTION);
     gen_signature_handshake(.instr(instr), .signature_type(WRITE_CSR), .csr(MCAUSE));
     instr = {instr,
-            $sformatf("csrr  x%0d, mepc", cfg.gpr[0]),
+            $sformatf("csrr  x%0d, 0x%0x", cfg.gpr[0], MEPC),
             $sformatf("addi  x%0d, x%0d, 4", cfg.gpr[0], cfg.gpr[0]),
-            $sformatf("csrw  mepc, x%0d", cfg.gpr[0])
+            $sformatf("csrw  0x%0x, x%0d", MEPC, cfg.gpr[0])
     };
     pop_gpr_from_kernel_stack(MSTATUS, MSCRATCH, cfg.mstatus_mprv, cfg.sp, cfg.tp, instr);
     instr.push_back("mret");
@@ -1037,9 +1204,9 @@ class riscv_asm_program_gen extends uvm_object;
     gen_signature_handshake(instr, CORE_STATUS, ILLEGAL_INSTR_EXCEPTION);
     gen_signature_handshake(.instr(instr), .signature_type(WRITE_CSR), .csr(MCAUSE));
     instr = {instr,
-            $sformatf("csrr  x%0d, mepc", cfg.gpr[0]),
+            $sformatf("csrr  x%0d, 0x%0x", cfg.gpr[0], MEPC),
             $sformatf("addi  x%0d, x%0d, 4", cfg.gpr[0], cfg.gpr[0]),
-            $sformatf("csrw  mepc, x%0d", cfg.gpr[0])
+            $sformatf("csrw  0x%0x, x%0d", MEPC, cfg.gpr[0])
     };
     pop_gpr_from_kernel_stack(MSTATUS, MSCRATCH, cfg.mstatus_mprv, cfg.sp, cfg.tp, instr);
     instr.push_back("mret");
@@ -1052,7 +1219,8 @@ class riscv_asm_program_gen extends uvm_object;
     gen_signature_handshake(instr, CORE_STATUS, INSTR_FAULT_EXCEPTION);
     gen_signature_handshake(.instr(instr), .signature_type(WRITE_CSR), .csr(MCAUSE));
     if (cfg.pmp_cfg.enable_pmp_exception_handler) begin
-      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg},
+      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg[0],
+                                             cfg.pmp_reg[1]},
                                             INSTRUCTION_ACCESS_FAULT,
                                             instr);
     end
@@ -1067,7 +1235,8 @@ class riscv_asm_program_gen extends uvm_object;
     gen_signature_handshake(instr, CORE_STATUS, LOAD_FAULT_EXCEPTION);
     gen_signature_handshake(.instr(instr), .signature_type(WRITE_CSR), .csr(MCAUSE));
     if (cfg.pmp_cfg.enable_pmp_exception_handler) begin
-      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg},
+      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg[0],
+                                             cfg.pmp_reg[1]},
                                             LOAD_ACCESS_FAULT,
                                             instr);
     end
@@ -1082,7 +1251,8 @@ class riscv_asm_program_gen extends uvm_object;
     gen_signature_handshake(instr, CORE_STATUS, STORE_FAULT_EXCEPTION);
     gen_signature_handshake(.instr(instr), .signature_type(WRITE_CSR), .csr(MCAUSE));
     if (cfg.pmp_cfg.enable_pmp_exception_handler) begin
-      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg},
+      cfg.pmp_cfg.gen_pmp_exception_routine({cfg.gpr, cfg.scratch_reg, cfg.pmp_reg[0],
+                                             cfg.pmp_reg[1]},
                                             STORE_AMO_ACCESS_FAULT,
                                             instr);
     end
@@ -1256,17 +1426,14 @@ class riscv_asm_program_gen extends uvm_object;
   endfunction
 
   // Dump performance CSRs if applicable
-  virtual function void dump_perf_stats();
-    string perf_stats[$];
+  virtual function void dump_perf_stats(ref string instr[$]);
     foreach(implemented_csr[i]) begin
       if (implemented_csr[i] inside {[MCYCLE:MHPMCOUNTER31H]}) begin
-        gen_signature_handshake(.instr(perf_stats),
+        gen_signature_handshake(.instr(instr),
                                 .signature_type(WRITE_CSR),
                                 .csr(implemented_csr[i]));
       end
     end
-    format_section(perf_stats);
-    instr_stream = {instr_stream, perf_stats};
   endfunction
 
   // Write the generated program to a file
@@ -1451,6 +1618,31 @@ class riscv_asm_program_gen extends uvm_object;
     debug_rom.hart = hart;
     debug_rom.gen_program();
     instr_stream = {instr_stream, debug_rom.instr_stream};
+  endfunction
+
+  //---------------------------------------------------------------------------------------
+  // Vector extension generation
+  //---------------------------------------------------------------------------------------
+
+  virtual function void randomize_vec_gpr_and_csr();
+    string lmul;
+    if (!(RVV inside {supported_isa})) return;
+    instr_stream.push_back({indent, $sformatf("csrwi vxsat, %0d", cfg.vector_cfg.vxsat)});
+    instr_stream.push_back({indent, $sformatf("csrwi vxrm, %0d", cfg.vector_cfg.vxrm)});
+    init_vec_gpr(); // GPR init uses a temporary SEW/LMUL setting before the final value set below.
+    instr_stream.push_back($sformatf("li x%0d, %0d", cfg.gpr[1], cfg.vector_cfg.vl));
+    if ((cfg.vector_cfg.vtype.vlmul > 1) && (cfg.vector_cfg.vtype.fractional_lmul)) begin
+      lmul = $sformatf("mf%0d", cfg.vector_cfg.vtype.vlmul);
+    end else begin
+      lmul = $sformatf("m%0d", cfg.vector_cfg.vtype.vlmul);
+    end
+    instr_stream.push_back($sformatf("%svsetvli x%0d, x%0d, e%0d, %0s, d%0d",
+                                     indent,
+                                     cfg.gpr[0],
+                                     cfg.gpr[1],
+                                     cfg.vector_cfg.vtype.vsew,
+                                     lmul,
+                                     cfg.vector_cfg.vtype.vediv));
   endfunction
 
 endclass

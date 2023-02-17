@@ -20,6 +20,7 @@ class riscv_privileged_common_seq extends uvm_sequence;
   riscv_instr_gen_config  cfg;
   int                     hart;
   riscv_privil_reg        mstatus;
+  rand bit                mstatus_mie;
   riscv_privil_reg        mie;
   riscv_privil_reg        sstatus;
   riscv_privil_reg        sie;
@@ -88,8 +89,14 @@ class riscv_privileged_common_seq extends uvm_sequence;
     mstatus.set_field("MPP", mode);
     mstatus.set_field("SPP", 0);
     // Enable interrupt
-    mstatus.set_field("MPIE", cfg.enable_interrupt);
-    mstatus.set_field("MIE", cfg.enable_interrupt);
+    // Only machine mode requires mstatus.MIE to be 1 for enabling interrupt
+    if (mode == MACHINE_MODE) begin
+      mstatus.set_field("MPIE", cfg.enable_interrupt);
+    end else begin
+      mstatus.set_field("MPIE", cfg.enable_interrupt & mstatus_mie);
+    end
+    // MIE is set when returning with mret, avoids trapping before returning
+    mstatus.set_field("MIE", 0);
     mstatus.set_field("SPIE", cfg.enable_interrupt);
     mstatus.set_field("SIE",  cfg.enable_interrupt);
     mstatus.set_field("UPIE", cfg.enable_interrupt);
@@ -196,7 +203,7 @@ class riscv_privileged_common_seq extends uvm_sequence;
     satp.init_reg(SATP);
     satp.set_field("MODE", SATP_MODE);
     instrs.push_back($sformatf("li x%0d, 0x%0x", cfg.gpr[0], satp.get_val()));
-    instrs.push_back($sformatf("csrw 0x%0x, x%0d // satp", SATP, cfg.gpr[0]));
+    instrs.push_back($sformatf("csrw 0x%0x, x%0d # satp", SATP, cfg.gpr[0]));
     satp_ppn_mask = '1 >> (XLEN - satp.get_field_by_name("PPN").bit_width);
     // Load the root page table physical address
     instrs.push_back($sformatf("la x%0d, page_table_0", cfg.gpr[0]));
@@ -205,7 +212,7 @@ class riscv_privileged_common_seq extends uvm_sequence;
     instrs.push_back($sformatf("li   x%0d, 0x%0x", cfg.gpr[1], satp_ppn_mask));
     instrs.push_back($sformatf("and x%0d, x%0d, x%0d", cfg.gpr[0], cfg.gpr[0], cfg.gpr[1]));
     // Set the PPN field for SATP
-    instrs.push_back($sformatf("csrs 0x%0x, x%0d // satp", SATP, cfg.gpr[0]));
+    instrs.push_back($sformatf("csrs 0x%0x, x%0d # satp", SATP, cfg.gpr[0]));
   endfunction
 
 endclass

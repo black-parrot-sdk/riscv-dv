@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# The -CFLAGS option is required as some VCS DPI code contains smart quotes
+# around some preprocessor macros, making G++ throw errors during compilation.
+# As a result, passing -fno-extended-identifiers tells G++ to pretend that
+# everything is ASCII, preventing strange compilation errors.
 - tool: vcs
   compile:
     cmd:
@@ -21,6 +25,7 @@
              -f <cwd>/files.f -full64
              -l <out>/compile.log
              -LDFLAGS '-Wl,--no-as-needed'
+             -CFLAGS '--std=c99 -fno-extended-identifiers'
              -Mdir=<out>/vcs_simv.csrc
              -o <out>/vcs_simv <cmp_opts> <cov_opts> "
     cov_opts: >
@@ -48,11 +53,10 @@
 - tool: questa
   compile:
     cmd:
-      - "vmap mtiUvm $QUESTA_HOME/questasim/uvm-1.2"
+      - "vmap mtiUvm $QUESTA_HOME/uvm-1.2"
       - "vlog -64
         +incdir+<setting>
         +incdir+<user_extension>
-        -access=rwc
         -f <cwd>/files.f
         -sv
         -mfcu -cuname design_cuname
@@ -108,6 +112,7 @@
     cmd:
       - "vlib <out>/work"
       - "vlog -work <out>/work
+        -err VCP2694 W1
         -uvmver 1.2
         +define+UVM_REGEX_NO_DPI
         +incdir+<setting>
@@ -130,7 +135,21 @@
               -uvmhome CDNS-1.2
               -elaborate
               -l <out>/compile.log <cmp_opts>
+              <cov_opts>
               -xmlibdirpath <out>"
+    cov_opts: >
+      -coverage all
+      -nowarn COVDEF
   sim:
     cmd: >
-      xrun -R -xmlibdirpath <out> <sim_opts> -svseed <seed> -svrnc rand_struct -nokey
+      xrun -R -xmlibdirpath <out> <sim_opts> <cov_opts> -svseed <seed> -svrnc rand_struct -nokey
+    cov_opts: >
+          -covmodeldir <out>/default/<test_id>.<seed>
+          -covworkdir <out>
+          -covscope default
+          -covtest <test_id>.<seed>
+
+- tool: pyflow
+  sim:
+    cmd: >
+      python3 <cwd>/pygen/pygen_src/test/<test_name>.py <sim_opts>

@@ -39,6 +39,12 @@ class riscv_instr_gen_config extends uvm_object;
   // Pattern of data section: RAND_DATA, ALL_ZERO, INCR_VAL
   rand data_pattern_t    data_page_pattern;
 
+  // Initialization of the vregs
+  // SAME_VALUES_ALL_ELEMS - Using vmv.v.x to fill all the elements of the vreg with the same value as the one in the GPR selected
+  // RANDOM_VALUES_VMV     - Using vmv.v.x + vslide1up.vx to randomize the contents of each vector element
+  // RANDOM_VALUES_LOAD    - Using vle.v, same approach as RANDOM_VALUES_VMV but more efficient for big VLEN
+  vreg_init_method_t     vreg_init_method = RANDOM_VALUES_VMV;
+
   // Associate array for delegation configuration for each exception and interrupt
   // When the bit is 1, the corresponding delegation is enabled.
   rand bit               m_mode_exception_delegation[exception_cause_t];
@@ -66,7 +72,7 @@ class riscv_instr_gen_config extends uvm_object;
   // TVEC alignment
   // This value is the log_2 of the byte-alignment of TVEC.BASE field
   // As per RISC-V privileged spec, default will be set to 2 (4-byte aligned)
-  int tvec_alignment = 2;
+  rand int tvec_alignment = 2;
 
   // Floating point rounding mode
   rand f_rounding_mode_t fcsr_rm;
@@ -84,7 +90,7 @@ class riscv_instr_gen_config extends uvm_object;
   // Can overlap with the other GPRs used in the random generation,
   // as PMP exception handler is hardcoded and does not include any
   // random instructions.
-  rand riscv_reg_t       pmp_reg;
+  rand riscv_reg_t       pmp_reg[2];
   // Use a random register for stack pointer/thread pointer
   rand riscv_reg_t       sp;
   rand riscv_reg_t       tp;
@@ -111,10 +117,7 @@ class riscv_instr_gen_config extends uvm_object;
 
   mem_region_t mem_region[$] = '{
     '{name:"region_0", size_in_bytes: 4096,      xwr: 3'b111},
-    '{name:"region_1", size_in_bytes: 4096 * 4,  xwr: 3'b111},
-    '{name:"region_2", size_in_bytes: 4096 * 2,  xwr: 3'b111},
-    '{name:"region_3", size_in_bytes: 512,       xwr: 3'b111},
-    '{name:"region_4", size_in_bytes: 4096,      xwr: 3'b111}
+    '{name:"region_1", size_in_bytes: 4096 * 16, xwr: 3'b111}
   };
 
   // Dedicated shared memory region for multi-harts atomic operations
@@ -158,12 +161,19 @@ class riscv_instr_gen_config extends uvm_object;
   bit                    no_load_store;      // No load/store instruction
   bit                    no_csr_instr;       // No csr instruction
   bit                    no_ebreak = 1;      // No ebreak instruction
+  // Only enable ecall if you have overriden the test_done mechanism.
+  bit                    no_ecall = 1;       // No ecall instruction
   bit                    no_dret = 1;        // No dret instruction
   bit                    no_fence;           // No fence instruction
   bit                    no_wfi = 1;         // No WFI instruction
   bit                    enable_unaligned_load_store;
   int                    illegal_instr_ratio;
   int                    hint_instr_ratio;
+  // CSR instruction control
+  bit                    gen_all_csrs_by_default = 0; // Generate CSR instructions that use all supported CSRs. Other options below only take effect if this is enabled.
+  bit                    gen_csr_ro_write = 0;        // Generate CSR writes to read-only CSRs
+  privileged_reg_t       add_csr_write[] = {};        // CSRs to add to the set of writeable CSRs
+  privileged_reg_t       remove_csr_write[] = {};     // CSRs to remove from the set of writeable CSRs
   // Number of harts to be simulated, must be <= NUM_HARTS
   int                    num_of_harts = NUM_HARTS;
   // Use SP as stack pointer
@@ -245,8 +255,16 @@ class riscv_instr_gen_config extends uvm_object;
   bit                    enable_floating_point;
   // Vector extension support
   bit                    enable_vector_extension;
+  // Only generate vector instructions
+  bit                    vector_instr_only;
   // Bit manipulation extension support
   bit                    enable_b_extension;
+
+  bit                    enable_zba_extension;
+  bit                    enable_zbb_extension;
+  bit                    enable_zbc_extension;
+  bit                    enable_zbs_extension;
+
   b_ext_group_t          enable_bitmanip_groups[] = {ZBB, ZBS, ZBP, ZBE, ZBF, ZBC, ZBR, ZBM, ZBT,
                                                      ZB_TMP};
 
@@ -323,6 +341,13 @@ class riscv_instr_gen_config extends uvm_object;
 
   constraint mtvec_c {
     mtvec_mode inside {supported_interrupt_mode};
+    if (mtvec_mode == DIRECT) {
+     soft tvec_alignment == 2;
+    } else {
+     // Setting MODE = Vectored may impose an additional alignmentconstraint on BASE,
+     // requiring up to 4×XLEN-byte alignment
+     soft tvec_alignment == $clog2((XLEN * 4) / 8);
+    }
   }
 
   constraint mstatus_c {
@@ -399,16 +424,19 @@ class riscv_instr_gen_config extends uvm_object;
     !(tp inside {GP, RA, ZERO});
   }
 
+  // This reg is used in various places throughout the generator,
+  // so need more conservative constraints on it.
   constraint reserve_scratch_reg_c {
-    scratch_reg != ZERO;
-    scratch_reg != sp;
-    scratch_reg != tp;
+    !(scratch_reg inside {ZERO, sp, tp, ra, GP});
   }
 
+  // These registers is only used inside PMP exception routine,
+  // so we can be a bit looser with constraints.
   constraint reserve_pmp_reg_c {
-    pmp_reg != ZERO;
-    pmp_reg != sp;
-    pmp_reg != tp;
+    foreach (pmp_reg[i]) {
+      !(pmp_reg[i] inside {ZERO, sp, tp, scratch_reg});
+    }
+    unique {pmp_reg};
   }
 
   constraint gpr_c {
@@ -462,6 +490,7 @@ class riscv_instr_gen_config extends uvm_object;
     `uvm_field_int(no_load_store, UVM_DEFAULT)
     `uvm_field_int(no_csr_instr, UVM_DEFAULT)
     `uvm_field_int(no_ebreak, UVM_DEFAULT)
+    `uvm_field_int(no_ecall, UVM_DEFAULT)
     `uvm_field_int(no_dret, UVM_DEFAULT)
     `uvm_field_int(no_fence, UVM_DEFAULT)
     `uvm_field_int(no_wfi, UVM_DEFAULT)
@@ -469,6 +498,10 @@ class riscv_instr_gen_config extends uvm_object;
     `uvm_field_int(enable_unaligned_load_store, UVM_DEFAULT)
     `uvm_field_int(illegal_instr_ratio, UVM_DEFAULT)
     `uvm_field_int(hint_instr_ratio, UVM_DEFAULT)
+    `uvm_field_int(gen_all_csrs_by_default, UVM_DEFAULT)
+    `uvm_field_int(gen_csr_ro_write, UVM_DEFAULT)
+    `uvm_field_array_enum(privileged_reg_t, add_csr_write, UVM_DEFAULT)
+    `uvm_field_array_enum(privileged_reg_t, remove_csr_write, UVM_DEFAULT)
     `uvm_field_string(boot_mode_opts, UVM_DEFAULT)
     `uvm_field_int(enable_page_table_exception, UVM_DEFAULT)
     `uvm_field_int(no_directed_instr, UVM_DEFAULT)
@@ -501,8 +534,13 @@ class riscv_instr_gen_config extends uvm_object;
     `uvm_field_int(max_directed_instr_stream_seq, UVM_DEFAULT)
     `uvm_field_int(enable_floating_point, UVM_DEFAULT)
     `uvm_field_int(enable_vector_extension, UVM_DEFAULT)
+    `uvm_field_int(vector_instr_only, UVM_DEFAULT)
     `uvm_field_int(enable_b_extension, UVM_DEFAULT)
     `uvm_field_array_enum(b_ext_group_t, enable_bitmanip_groups, UVM_DEFAULT)
+    `uvm_field_int(enable_zba_extension, UVM_DEFAULT)
+    `uvm_field_int(enable_zbb_extension, UVM_DEFAULT)
+    `uvm_field_int(enable_zbc_extension, UVM_DEFAULT)
+    `uvm_field_int(enable_zbs_extension, UVM_DEFAULT)
     `uvm_field_int(use_push_data_section, UVM_DEFAULT)
   `uvm_object_utils_end
 
@@ -519,8 +557,8 @@ class riscv_instr_gen_config extends uvm_object;
     get_bool_arg_value("+enable_timer_irq=", enable_timer_irq);
     get_int_arg_value("+num_of_sub_program=", num_of_sub_program);
     get_int_arg_value("+instr_cnt=", instr_cnt);
-    get_int_arg_value("+tvec_alignment=", tvec_alignment);
     get_bool_arg_value("+no_ebreak=", no_ebreak);
+    get_bool_arg_value("+no_ecall=", no_ecall);
     get_bool_arg_value("+no_dret=", no_dret);
     get_bool_arg_value("+no_wfi=", no_wfi);
     get_bool_arg_value("+no_branch_jump=", no_branch_jump);
@@ -539,6 +577,12 @@ class riscv_instr_gen_config extends uvm_object;
     get_bool_arg_value("+no_delegation=", no_delegation);
     get_int_arg_value("+illegal_instr_ratio=", illegal_instr_ratio);
     get_int_arg_value("+hint_instr_ratio=", hint_instr_ratio);
+    get_bool_arg_value("+gen_all_csrs_by_default=", gen_all_csrs_by_default);
+    get_bool_arg_value("+gen_csr_ro_write=", gen_csr_ro_write);
+    cmdline_enum_processor #(privileged_reg_t)::get_array_values("+add_csr_write=",
+                                                              1'b1, add_csr_write);
+    cmdline_enum_processor #(privileged_reg_t)::get_array_values("+remove_csr_write=",
+                                                              1'b1, remove_csr_write);
     get_int_arg_value("+num_of_harts=", num_of_harts);
     get_bool_arg_value("+enable_unaligned_load_store=", enable_unaligned_load_store);
     get_bool_arg_value("+force_m_delegation=", force_m_delegation);
@@ -548,6 +592,9 @@ class riscv_instr_gen_config extends uvm_object;
     get_bool_arg_value("+randomize_csr=", randomize_csr);
     if (this.require_signature_addr) begin
       get_hex_arg_value("+signature_addr=", signature_addr);
+    end
+    if ($value$plusargs("tvec_alignment=%0d", tvec_alignment)) begin
+      tvec_alignment.rand_mode(0);
     end
     get_bool_arg_value("+gen_debug_section=", gen_debug_section);
     get_bool_arg_value("+bare_program_mode=", bare_program_mode);
@@ -560,8 +607,12 @@ class riscv_instr_gen_config extends uvm_object;
     get_bool_arg_value("+enable_floating_point=", enable_floating_point);
     get_bool_arg_value("+enable_vector_extension=", enable_vector_extension);
     get_bool_arg_value("+enable_b_extension=", enable_b_extension);
+    get_bool_arg_value("+enable_zba_extension=", enable_zba_extension);
+    get_bool_arg_value("+enable_zbb_extension=", enable_zbb_extension);
+    get_bool_arg_value("+enable_zbc_extension=", enable_zbc_extension);
+    get_bool_arg_value("+enable_zbs_extension=", enable_zbs_extension);
     cmdline_enum_processor #(b_ext_group_t)::get_array_values("+enable_bitmanip_groups=",
-                                                              enable_bitmanip_groups);
+                                                              1'b0, enable_bitmanip_groups);
     if(inst.get_arg_value("+boot_mode=", boot_mode_opts)) begin
       `uvm_info(get_full_name(), $sformatf(
                 "Got boot mode option - %0s", boot_mode_opts), UVM_LOW)
@@ -579,21 +630,42 @@ class riscv_instr_gen_config extends uvm_object;
                    riscv_instr_pkg::supported_privileged_mode.size()), UVM_LOW)
     void'(inst.get_arg_value("+asm_test_suffix=", asm_test_suffix));
     // Directed march list from the runtime options, ex. RV32I, RV32M etc.
-    cmdline_enum_processor #(riscv_instr_group_t)::get_array_values("+march=", march_isa);
+    cmdline_enum_processor #(riscv_instr_group_t)::get_array_values("+march=", 1'b0, march_isa);
     if (march_isa.size != 0) riscv_instr_pkg::supported_isa = march_isa;
 
     if (!(RV32C inside {supported_isa})) begin
       disable_compressed_instr = 1;
     end
+
+    if (!((RV32ZBA inside {supported_isa}) ||
+          (RV64ZBA inside {supported_isa}))) begin
+      enable_zba_extension = 0;
+    end
+
+    if (!((RV32ZBB inside {supported_isa}) ||
+          (RV64ZBB inside {supported_isa}))) begin
+      enable_zbb_extension = 0;
+    end
+
+    if (!((RV32ZBC inside {supported_isa}) ||
+          (RV64ZBC inside {supported_isa}))) begin
+      enable_zbc_extension = 0;
+    end
+
+    if (!((RV32ZBS inside {supported_isa}) ||
+          (RV64ZBS inside {supported_isa}))) begin
+      enable_zbs_extension = 0;
+    end
+
     vector_cfg = riscv_vector_cfg::type_id::create("vector_cfg");
     pmp_cfg = riscv_pmp_cfg::type_id::create("pmp_cfg");
     pmp_cfg.rand_mode(pmp_cfg.pmp_randomize);
-    pmp_cfg.initialize(require_signature_addr);
+    pmp_cfg.initialize(signature_addr);
     setup_instr_distribution();
     get_invalid_priv_lvl_csr();
   endfunction
 
-  function void setup_instr_distribution();
+  virtual function void setup_instr_distribution();
     string opts;
     int val;
     get_int_arg_value("+dist_control_mode=", dist_control_mode);
@@ -645,7 +717,7 @@ class riscv_instr_gen_config extends uvm_object;
     end
   endfunction
 
-  function void get_non_reserved_gpr();
+  virtual function void get_non_reserved_gpr();
   endfunction
 
   function void post_randomize();
@@ -655,13 +727,9 @@ class riscv_instr_gen_config extends uvm_object;
     min_stack_len_per_program = 2 * (XLEN/8);
     // Check if the setting is legal
     check_setting();
-    // WFI is not supported in umode
-    if (init_privileged_mode == USER_MODE) begin
-      no_wfi = 1'b1;
-    end
   endfunction
 
-  function void check_setting();
+  virtual function void check_setting();
     bit support_64b;
     bit support_128b;
     foreach (riscv_instr_pkg::supported_isa[i]) begin

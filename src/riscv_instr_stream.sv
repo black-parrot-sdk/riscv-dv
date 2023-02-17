@@ -52,7 +52,9 @@ class riscv_instr_stream extends uvm_object;
   // When index is -1, the instruction is injected at a random location
   function void insert_instr(riscv_instr instr, int idx = -1);
     int current_instr_cnt = instr_list.size();
-    if(idx == -1) begin
+    if (current_instr_cnt == 0) begin
+      idx = 0;
+    end else if (idx == -1) begin
       idx = $urandom_range(0, current_instr_cnt-1);
       while(instr_list[idx].atomic) begin
        idx += 1;
@@ -186,6 +188,18 @@ class riscv_rand_instr_stream extends riscv_instr_stream;
     setup_instruction_dist(no_branch, no_load_store);
   endfunction
 
+  virtual function void randomize_avail_regs();
+    if(avail_regs.size() > 0) begin
+      `DV_CHECK_STD_RANDOMIZE_WITH_FATAL(avail_regs,
+                                         unique{avail_regs};
+                                         avail_regs[0] inside {[S0 : A5]};
+                                         foreach(avail_regs[i]) {
+                                           !(avail_regs[i] inside {cfg.reserved_regs, reserved_rd});
+                                         },
+                                         "Cannot randomize avail_regs")
+    end
+  endfunction
+
   function void setup_instruction_dist(bit no_branch = 1'b0, bit no_load_store = 1'b1);
     if (cfg.dist_control_mode) begin
       category_dist = cfg.category_dist;
@@ -216,21 +230,30 @@ class riscv_rand_instr_stream extends riscv_instr_stream;
 
   function void randomize_instr(output riscv_instr instr,
                                 input  bit is_in_debug = 1'b0,
-                                input  bit disable_dist = 1'b0);
+                                input  bit disable_dist = 1'b0,
+                                input  riscv_instr_group_t include_group[$] = {});
     riscv_instr_name_t exclude_instr[];
     if ((SP inside {reserved_rd, cfg.reserved_regs}) ||
         ((avail_regs.size() > 0) && !(SP inside {avail_regs}))) begin
       exclude_instr = {C_ADDI4SPN, C_ADDI16SP, C_LWSP, C_LDSP};
     end
-    if (is_in_debug && !cfg.enable_ebreak_in_debug_rom) begin
-      exclude_instr = {exclude_instr, EBREAK, C_EBREAK};
+    // Post-process the allowed_instr and exclude_instr lists to handle
+    // adding ebreak instructions to the debug rom.
+    if (is_in_debug) begin
+      if (cfg.no_ebreak && cfg.enable_ebreak_in_debug_rom) begin
+        allowed_instr = {allowed_instr, EBREAK, C_EBREAK};
+      end else if (!cfg.no_ebreak && !cfg.enable_ebreak_in_debug_rom) begin
+        exclude_instr = {exclude_instr, EBREAK, C_EBREAK};
+      end
     end
     instr = riscv_instr::get_rand_instr(.include_instr(allowed_instr),
-                                        .exclude_instr(exclude_instr));
+                                        .exclude_instr(exclude_instr),
+                                        .include_group(include_group));
+    instr.m_cfg = cfg;
     randomize_gpr(instr);
   endfunction
 
-  function void randomize_gpr(ref riscv_instr instr);
+  function void randomize_gpr(riscv_instr instr);
     `DV_CHECK_RANDOMIZE_WITH_FATAL(instr,
       if (avail_regs.size() > 0) {
         if (has_rs1) {
@@ -261,6 +284,31 @@ class riscv_rand_instr_stream extends riscv_instr_stream;
       }
       // TODO: Add constraint for CSR, floating point register
     )
+  endfunction
+
+  function riscv_instr get_init_gpr_instr(riscv_reg_t gpr, bit [XLEN-1:0] val);
+    riscv_pseudo_instr li_instr;
+    li_instr = riscv_pseudo_instr::type_id::create("li_instr");
+    `DV_CHECK_RANDOMIZE_WITH_FATAL(li_instr,
+       pseudo_instr_name == LI;
+       rd == gpr;
+    )
+    li_instr.imm_str = $sformatf("0x%0x", val);
+    return li_instr;
+  endfunction
+
+  function void add_init_vector_gpr_instr(riscv_vreg_t gpr, bit [XLEN-1:0] val);
+    riscv_vector_instr instr;
+    $cast(instr, riscv_instr::get_instr(VMV));
+    instr.m_cfg = cfg;
+    instr.avoid_reserved_vregs_c.constraint_mode(0);
+    `DV_CHECK_RANDOMIZE_WITH_FATAL(instr,
+      va_variant == VX;
+      vd == gpr;
+      rs1 == cfg.gpr[0];
+    )
+    instr_list.push_front(instr);
+    instr_list.push_front(get_init_gpr_instr(cfg.gpr[0], val));
   endfunction
 
 endclass

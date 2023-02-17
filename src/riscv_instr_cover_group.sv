@@ -34,6 +34,10 @@
 
 `define SAMPLE_F(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_floating_point_instr)
 `define SAMPLE_B(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_b_instr)
+`define SAMPLE_ZBA(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_zba_instr)
+`define SAMPLE_ZBB(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_zbb_instr)
+`define SAMPLE_ZBC(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_zbc_instr)
+`define SAMPLE_ZBS(cg, val) `SAMPLE_W_TYPE(cg, val, riscv_zbs_instr)
 
 `define INSTR_CG_BEGIN(INSTR_NAME, INSTR_CLASS = riscv_instr) \
   covergroup ``INSTR_NAME``_cg with function sample(INSTR_CLASS instr);
@@ -228,17 +232,62 @@
   `INSTR_CG_BEGIN(INSTR_NAME) \
     cp_imm_sign : coverpoint instr.imm_sign;
 
-// TODO, will handle special value later
-// single-precision floating point special values coverpoint
-`define FP_SPECIAL_VALUES_CP(VAR, NAME) \
-    cp_fp_special_values_on_``NAME`` : coverpoint VAR { \
+// single/double precision floating point special values coverpoint
+`define FP_SPECIAL_VALUES_CP(VAR, NAME, PRECISION = S) \
+    cp_sfp_special_values_on_``NAME`` : coverpoint VAR[31:0] { \
+      option.weight = (`"PRECISION`" == "S"); \
+      type_option.weight = (`"PRECISION`" == "S"); \
       bins infinity[] = {32'h7f80_0000, 32'hff80_0000}; \
       bins largest[]  = {32'h7f7f_ffff, 32'hff7f_ffff}; \
-      bins zeros[]    = {32'h0000_0000, 32'h1000_0000}; \
-      bins NaN[]      = {32'h7fc0_0000, 32'h7f80_0000}; \
+      bins zeros[]    = {32'h0000_0000, 32'h8000_0000}; \
+      bins NaN[]      = {32'h7f80_0001, 32'h7fc0_0000}; \
+    } \
+    cp_sfp_subnormal_on_``NAME`` : coverpoint VAR[30:SINGLE_PRECISION_FRACTION_BITS] == 0 { \
+      option.weight = (`"PRECISION`" == "S"); \
+      type_option.weight = (`"PRECISION`" == "S"); \
+    } \
+    cp_dfp_special_values_on_``NAME`` : coverpoint VAR { \
+      option.weight = (`"PRECISION`" == "D"); \
+      type_option.weight = (`"PRECISION`" == "D"); \
+      bins infinity[] = {64'h7ff0_0000_0000_0000, 64'hfff0_0000_0000_0000}; \
+      bins largest[]  = {64'h7fef_ffff_ffff_ffff, 64'hffef_ffff_ffff_ffff}; \
+      bins zeros[]    = {64'h0000_0000_0000_0000, 64'h8000_0000_0000_0000}; \
+      bins NaN[]      = {64'h7ff0_0000_0000_0001, 64'h7ff8_0000_0000_0000}; \
+    } \
+    cp_dfp_subnormal_on_``NAME`` : coverpoint VAR[62:DOUBLE_PRECISION_FRACTION_BITS-1] == 0 { \
+      option.weight = (`"PRECISION`" == "D"); \
+      type_option.weight = (`"PRECISION`" == "D"); \
     }
 
-`define FP_R_INSTR_CG_BEGIN(INSTR_NAME) \
+`define FP_LOAD_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_rs1         : coverpoint instr.rs1 { \
+      `DV(ignore_bins zero = {ZERO};) \
+    } \
+    cp_fd          : coverpoint instr.fd; \
+    cp_imm_sign    : coverpoint instr.imm_sign; \
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, PRECISION) \
+    `DV(cp_gpr_hazard  : coverpoint instr.gpr_hazard;) \
+    `DV(cp_lsu_hazard  : coverpoint instr.lsu_hazard { \
+      bins valid_hazard[] = {NO_HAZARD, RAW_HAZARD}; \
+    })
+
+`define FP_STORE_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_rs1         : coverpoint instr.rs1 { \
+        `DV(ignore_bins zero = {ZERO};) \
+    } \
+    cp_fs2         : coverpoint instr.fs2; \
+    cp_imm_sign    : coverpoint instr.imm_sign; \
+    `FP_SPECIAL_VALUES_CP(instr.fs2_value, fs2_value, PRECISION) \
+    `DV(cp_gpr_hazard  : coverpoint instr.gpr_hazard { \
+      bins valid_hazard[] = {NO_HAZARD, RAW_HAZARD}; \
+    }) \
+    `DV(cp_lsu_hazard  : coverpoint instr.lsu_hazard { \
+      bins valid_hazard[] = {NO_HAZARD, WAR_HAZARD, WAW_HAZARD}; \
+    })
+
+`define FP_R_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
   `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
     cp_fs1         : coverpoint instr.fs1; \
     cp_fs2         : coverpoint instr.fs2; \
@@ -246,9 +295,12 @@
     cp_fs1_sign    : coverpoint instr.fs1_sign; \
     cp_fs2_sign    : coverpoint instr.fs2_sign; \
     cp_fd_sign     : coverpoint instr.fd_sign; \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fs2_value, fs2_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, PRECISION) \
     `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
 
-`define FP_R4_INSTR_CG_BEGIN(INSTR_NAME) \
+`define FP_R4_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
   `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
     cp_fs1         : coverpoint instr.fs1; \
     cp_fs2         : coverpoint instr.fs2; \
@@ -259,14 +311,126 @@
     cp_fs3_sign    : coverpoint instr.fs3_sign; \
     cp_fd_sign     : coverpoint instr.fd_sign; \
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign, cp_fs3_sign, cp_fd_sign; \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fs2_value, fs2_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fs3_value, fs3_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, PRECISION) \
     `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
 
-`define FSQRT_INSTR_CG_BEGIN(INSTR_NAME) \
+`define FSQRT_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
   `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
     cp_fs1         : coverpoint instr.fs1; \
     cp_fd          : coverpoint instr.fd;  \
     cp_fs1_sign    : coverpoint instr.fs1_sign; \
     cp_fd_sign     : coverpoint instr.fd_sign; \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, PRECISION) \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+// FCVT integer to floating
+`define FP_I2F_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S, SIGN_TYP = SIGN) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_fd          : coverpoint instr.fd; \
+    cp_rs1_sign    : coverpoint instr.rs1_sign { \
+      option.weight = (`"SIGN_TYP`" == "SIGN"); \
+      type_option.weight = (`"SIGN_TYP`" == "SIGN"); \
+    } \
+    cp_fd_sign     : coverpoint instr.fd_sign { \
+      option.weight = (`"SIGN_TYP`" == "SIGN"); \
+      type_option.weight = (`"SIGN_TYP`" == "SIGN"); \
+    } \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+// FCVT floating to integer
+`define FP_F2I_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S, SIGN_TYP = SIGN) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_fs1         : coverpoint instr.fs1; \
+    cp_rd          : coverpoint instr.rd;  \
+    cp_fs1_sign    : coverpoint instr.fs1_sign; \
+    cp_rd_sign     : coverpoint instr.rd_sign { \
+      option.weight = (`"SIGN_TYP`" == "SIGN"); \
+      type_option.weight = (`"SIGN_TYP`" == "SIGN"); \
+    } \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+// floating compare instructions
+`define FP_CMP_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_fs1         : coverpoint instr.fs1; \
+    cp_fs2         : coverpoint instr.fs2; \
+    cp_rd          : coverpoint instr.rd;  \
+    cp_fs1_sign    : coverpoint instr.fs1_sign; \
+    cp_fs2_sign    : coverpoint instr.fs2_sign; \
+    `CP_VALUE_RANGE(compare_result, instr.rd_value, 0, 1) \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `FP_SPECIAL_VALUES_CP(instr.fs2_value, fs2_value, PRECISION) \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+`define FCLASS_INSTR_CG_BEGIN(INSTR_NAME, PRECISION = S) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_floating_point_instr) \
+    cp_fs1         : coverpoint instr.fs1; \
+    cp_rd          : coverpoint instr.rd;  \
+    cp_fs1_sign    : coverpoint instr.fs1_sign; \
+    cp_rd_value    : coverpoint instr.rd_value { \
+      bins values[] = {0, 'b1, 'b10, 'b100, 'b1000, 'b1_0000, 'b10_0000, \
+                       'b100_0000, 'b1000_0000, 'b1_0000_0000, 'b10_0000_0000}; \
+      illegal_bins others = default; \
+    } \
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, PRECISION) \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+`define ZBA_I_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zba_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rd          : coverpoint instr.rd; \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+
+`define ZBA_R_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zba_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rs2         : coverpoint instr.rs2; \
+    cp_rd          : coverpoint instr.rd;  \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+`define ZBB_I_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbb_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rd          : coverpoint instr.rd; \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+
+`define ZBB_R_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbb_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rs2         : coverpoint instr.rs2; \
+    cp_rd          : coverpoint instr.rd;  \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+`define ZBC_I_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbc_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rd          : coverpoint instr.rd; \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+
+`define ZBC_R_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbc_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rs2         : coverpoint instr.rs2; \
+    cp_rd          : coverpoint instr.rd;  \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
+
+`define ZBS_I_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbs_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rd          : coverpoint instr.rd; \
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+
+`define ZBS_R_INSTR_CG_BEGIN(INSTR_NAME) \
+  `INSTR_CG_BEGIN(INSTR_NAME, riscv_zbs_instr) \
+    cp_rs1         : coverpoint instr.rs1; \
+    cp_rs2         : coverpoint instr.rs2; \
+    cp_rd          : coverpoint instr.rd;  \
     `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;) \
 
 `define B_I_INSTR_CG_BEGIN(INSTR_NAME) \
@@ -317,7 +481,6 @@
 class riscv_instr_cover_group;
 
   riscv_instr_gen_config  cfg;
-  riscv_instr             cur_instr;
   riscv_instr             pre_instr;
   riscv_instr_name_t      instr_list[$];
   int unsigned            instr_cnt;
@@ -537,33 +700,23 @@ class riscv_instr_cover_group;
   `CG_END
 
   // floating instructions
-  `INSTR_CG_BEGIN(flw, riscv_floating_point_instr)
-    cp_rs1         : coverpoint instr.rs1 {
-      `DV(ignore_bins zero = {ZERO};)
-    }
-    cp_fd          : coverpoint instr.fd;
-    cp_imm_sign    : coverpoint instr.imm_sign;
-    `DV(cp_gpr_hazard  : coverpoint instr.gpr_hazard;)
-    `DV(cp_lsu_hazard  : coverpoint instr.lsu_hazard {
-      bins valid_hazard[] = {NO_HAZARD, RAW_HAZARD};
-    })
+  `FP_LOAD_INSTR_CG_BEGIN(flw)
   `CG_END
 
-  `INSTR_CG_BEGIN(fsw, riscv_floating_point_instr)
-    cp_rs1         : coverpoint instr.rs1 {
-        `DV(ignore_bins zero = {ZERO};)
-    }
-    cp_fs2         : coverpoint instr.fs2;
-    cp_imm_sign    : coverpoint instr.imm_sign;
-    `DV(cp_gpr_hazard  : coverpoint instr.gpr_hazard {
-      bins valid_hazard[] = {NO_HAZARD, RAW_HAZARD};
-    })
-    `DV(cp_lsu_hazard  : coverpoint instr.lsu_hazard {
-      bins valid_hazard[] = {NO_HAZARD, WAR_HAZARD, WAW_HAZARD};
-    })
+  `FP_LOAD_INSTR_CG_BEGIN(fld, D)
+  `CG_END
+
+  `FP_STORE_INSTR_CG_BEGIN(fsw)
+  `CG_END
+
+  `FP_STORE_INSTR_CG_BEGIN(fsd, D)
   `CG_END
 
   `FP_R_INSTR_CG_BEGIN(fadd_s)
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign, cp_fd_sign;
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fadd_d, D)
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign, cp_fd_sign;
   `CG_END
 
@@ -571,19 +724,37 @@ class riscv_instr_cover_group;
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign, cp_fd_sign;
   `CG_END
 
+  `FP_R_INSTR_CG_BEGIN(fsub_d, D)
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign, cp_fd_sign;
+  `CG_END
+
   `FP_R_INSTR_CG_BEGIN(fmul_s)
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
   `CG_END
 
+  `FP_R_INSTR_CG_BEGIN(fmul_d, D)
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
+  `CG_END
+
   `FP_R_INSTR_CG_BEGIN(fdiv_s)
-    cp_div_result: coverpoint instr.div_result;
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fdiv_d, D)
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
   `CG_END
 
   `FSQRT_INSTR_CG_BEGIN(fsqrt_s)
   `CG_END
 
+  `FSQRT_INSTR_CG_BEGIN(fsqrt_d, D)
+  `CG_END
+
   `FP_R_INSTR_CG_BEGIN(fmin_s)
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fmin_d, D)
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
   `CG_END
 
@@ -591,55 +762,328 @@ class riscv_instr_cover_group;
     cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
   `CG_END
 
+  `FP_R_INSTR_CG_BEGIN(fmax_d, D)
+    cp_sign_cross: cross cp_fs1_sign, cp_fs2_sign;
+  `CG_END
+
   `FP_R4_INSTR_CG_BEGIN(fmadd_s)
+  `CG_END
+
+  `FP_R4_INSTR_CG_BEGIN(fmadd_d, D)
   `CG_END
 
   `FP_R4_INSTR_CG_BEGIN(fnmadd_s)
   `CG_END
 
+  `FP_R4_INSTR_CG_BEGIN(fnmadd_d, D)
+  `CG_END
+
   `FP_R4_INSTR_CG_BEGIN(fmsub_s)
+  `CG_END
+
+  `FP_R4_INSTR_CG_BEGIN(fmsub_d, D)
   `CG_END
 
   `FP_R4_INSTR_CG_BEGIN(fnmsub_s)
   `CG_END
 
-  // B extension
+  `FP_R4_INSTR_CG_BEGIN(fnmsub_d, D)
+  `CG_END
+
+  // FCVT floating to floating
+  `INSTR_CG_BEGIN(fcvt_s_d, riscv_floating_point_instr)
+    cp_fs1         : coverpoint instr.fs1;
+    cp_fd          : coverpoint instr.fd;
+    cp_fs1_sign    : coverpoint instr.fs1_sign;
+    cp_fd_sign     : coverpoint instr.fd_sign;
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, D)
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, S)
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+  `CG_END
+
+  `INSTR_CG_BEGIN(fcvt_d_s, riscv_floating_point_instr)
+    cp_fs1         : coverpoint instr.fs1;
+    cp_fd          : coverpoint instr.fd;
+    cp_fs1_sign    : coverpoint instr.fs1_sign;
+    cp_fd_sign     : coverpoint instr.fd_sign;
+    `FP_SPECIAL_VALUES_CP(instr.fs1_value, fs1_value, S)
+    `FP_SPECIAL_VALUES_CP(instr.fd_value, fd_value, D)
+    `DV(cp_gpr_hazard : coverpoint instr.gpr_hazard;)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_w_s)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_wu_s, , UNSIGN)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_l_s)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_lu_s, UNSIGN)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_l_d, D)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_lu_d, D, UNSIGN)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_w_d, D)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fcvt_wu_d, D, UNSIGN)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_s_w)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_s_wu, , UNSIGN)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_s_l)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_d_l, D)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_s_lu, , UNSIGN)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_d_w, D)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_d_lu, D, UNSIGN)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fcvt_d_wu, D, UNSIGN)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnj_s)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnj_d, D)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnjn_s)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnjn_d, D)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnjx_s)
+  `CG_END
+
+  `FP_R_INSTR_CG_BEGIN(fsgnjx_d, D)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fmv_x_w)
+  `CG_END
+
+  `FP_F2I_INSTR_CG_BEGIN(fmv_x_d, D)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fmv_w_x)
+  `CG_END
+
+  `FP_I2F_INSTR_CG_BEGIN(fmv_d_x, D)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(feq_s)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(feq_d, D)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(flt_s)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(flt_d, D)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(fle_s)
+  `CG_END
+
+  `FP_CMP_INSTR_CG_BEGIN(fle_d, D)
+  `CG_END
+
+  `FCLASS_INSTR_CG_BEGIN(fclass_s)
+  `CG_END
+
+  `FCLASS_INSTR_CG_BEGIN(fclass_d, D)
+  `CG_END
+
+  // B extension instructions ratified in v.1.00 (Zba, Zbb, Zbc, Zbs).
+  `ZBA_R_INSTR_CG_BEGIN(sh1add)
+  `CG_END
+  `ZBA_R_INSTR_CG_BEGIN(sh2add)
+  `CG_END
+  `ZBA_R_INSTR_CG_BEGIN(sh3add)
+  `CG_END
+  `ZBA_R_INSTR_CG_BEGIN(sh1add_uw)
+  `CG_END
+  `ZBA_R_INSTR_CG_BEGIN(sh2add_uw)
+  `CG_END
+  `ZBA_R_INSTR_CG_BEGIN(sh3add_uw)
+  `CG_END
+
   // Count Leading/Trailing Zeros (clz, ctz)
-  `B_R_INSTR_NO_RS2_CG_BEGIN(clz)
+  `ZBB_I_INSTR_CG_BEGIN(clz)
     `CP_VALUE_RANGE(num_leading_zeros, instr.rd_value, 0, XLEN-1)
   `CG_END
 
-  `B_R_INSTR_NO_RS2_CG_BEGIN(ctz)
+  `ZBB_I_INSTR_CG_BEGIN(ctz)
     `CP_VALUE_RANGE(num_trailing_zeros, instr.rd_value, 0, XLEN-1)
   `CG_END
 
-  `B_R_INSTR_NO_RS2_CG_BEGIN(clzw)
-    `CP_VALUE_RANGE(num_leading_zeros, instr.rd_value, 0, XLEN/2-1)
+  `ZBB_I_INSTR_CG_BEGIN(clzw)
+    `CP_VALUE_RANGE(num_leading_zeros, instr.rd_value, 0, XLEN-1)
   `CG_END
 
-  `B_R_INSTR_NO_RS2_CG_BEGIN(ctzw)
-    `CP_VALUE_RANGE(num_trailing_zeros, instr.rd_value, 0, XLEN/2-1)
+  `ZBB_I_INSTR_CG_BEGIN(ctzw)
+    `CP_VALUE_RANGE(num_trailing_zeros, instr.rd_value, 0, XLEN-1)
   `CG_END
 
-  // Count Bits Set (pcnt)
-  `B_R_INSTR_NO_RS2_CG_BEGIN(pcnt)
+  `ZBB_I_INSTR_CG_BEGIN(cpop)
     `CP_VALUE_RANGE(num_set_bits, instr.rd_value, 0, XLEN-1)
   `CG_END
 
-  `B_R_INSTR_NO_RS2_CG_BEGIN(pcntw)
-    `CP_VALUE_RANGE(num_set_bits, instr.rd_value, 0, XLEN/2-1)
+  `ZBB_I_INSTR_CG_BEGIN(cpopw)
+    `CP_VALUE_RANGE(num_set_bits, instr.rd_value, 0, XLEN-1)
   `CG_END
 
   // Logic-with-negate (andn, orn, xnor)
-  `B_R_INSTR_CG_BEGIN(andn)
+  `ZBB_R_INSTR_CG_BEGIN(andn)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(orn)
+  `ZBB_R_INSTR_CG_BEGIN(orn)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(xnor)
+  `ZBB_R_INSTR_CG_BEGIN(xnor)
   `CG_END
 
+  // Or-combine
+  `ZBB_R_INSTR_CG_BEGIN(orc_b)
+    `CP_VALUE_RANGE(or_combine_mode, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  // Min/max instructions (min, max, minu, maxu)
+  `ZBB_R_INSTR_CG_BEGIN(min)
+    cp_rs1_gt_rs2  : coverpoint (longint'(instr.rs1_value) > longint'(instr.rs2_value));
+    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
+      bins equal = {1};
+    }
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(max)
+    cp_rs1_gt_rs2  : coverpoint (longint'(instr.rs1_value) > longint'(instr.rs2_value));
+    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
+      bins equal = {1};
+    }
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(minu)
+    cp_rs1_gt_rs2  : coverpoint (instr.rs1_value > instr.rs2_value);
+    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
+      bins equal = {1};
+    }
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(maxu)
+    cp_rs1_gt_rs2  : coverpoint (instr.rs1_value > instr.rs2_value);
+    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
+      bins equal = {1};
+    }
+  `CG_END
+
+  // Sign-extend instructions (sext.b, sext.h)
+  `ZBB_I_INSTR_CG_BEGIN(sext_b)
+  `CG_END
+
+  `ZBB_I_INSTR_CG_BEGIN(sext_h)
+  `CG_END
+
+  `ZBB_I_INSTR_CG_BEGIN(zext_h)
+  `CG_END
+
+  // Rotate (Left/Right) (rol, ror, rori)
+  `ZBB_R_INSTR_CG_BEGIN(ror)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(rol)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBB_I_INSTR_CG_BEGIN(rori)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(rorw)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN/2-1)
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(rolw)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN/2-1)
+  `CG_END
+
+  `ZBB_I_INSTR_CG_BEGIN(roriw)
+    `CP_VALUE_RANGE(num_bit_rotate, instr.imm, 0, XLEN/2-1)
+  `CG_END
+
+  `ZBB_R_INSTR_CG_BEGIN(rev8)
+  `CG_END
+
+  // Multiplication
+  `ZBC_R_INSTR_CG_BEGIN(clmul)
+  `CG_END
+
+  `ZBC_R_INSTR_CG_BEGIN(clmulh)
+  `CG_END
+
+  `ZBC_R_INSTR_CG_BEGIN(clmulr)
+  `CG_END
+
+  `ZBA_I_INSTR_CG_BEGIN(slli_uw)
+    `CP_VALUE_RANGE(num_shift, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  `ZBA_R_INSTR_CG_BEGIN(add_uw)
+  `CG_END
+
+  `ZBS_R_INSTR_CG_BEGIN(bclr)
+    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_I_INSTR_CG_BEGIN(bclri)
+    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_R_INSTR_CG_BEGIN(bext)
+    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_I_INSTR_CG_BEGIN(bexti)
+    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_R_INSTR_CG_BEGIN(binv)
+    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_I_INSTR_CG_BEGIN(binvi)
+    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_R_INSTR_CG_BEGIN(bset)
+    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
+  `CG_END
+
+  `ZBS_I_INSTR_CG_BEGIN(bseti)
+    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
+  `CG_END
+
+  // Remaining bitmanip instructions of draft v.0.93 not ratified in v.1.00 (Zba, Zbb, Zbc, Zbs).
   // Pack two words in one register (pack, packu, packh)
   `B_R_INSTR_CG_BEGIN(pack)
   `CG_END
@@ -654,75 +1098,6 @@ class riscv_instr_cover_group;
   `CG_END
 
   `B_R_INSTR_CG_BEGIN(packuw)
-  `CG_END
-
-  // Min/max instructions (min, max, minu, maxu)
-  `B_R_INSTR_CG_BEGIN(min)
-    cp_rs1_gt_rs2  : coverpoint (longint'(instr.rs1_value) > longint'(instr.rs2_value));
-    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
-      bins equal = {1};
-    }
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(max)
-    cp_rs1_gt_rs2  : coverpoint (longint'(instr.rs1_value) > longint'(instr.rs2_value));
-    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
-      bins equal = {1};
-    }
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(minu)
-    cp_rs1_gt_rs2  : coverpoint (instr.rs1_value > instr.rs2_value);
-    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
-      bins equal = {1};
-    }
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(maxu)
-    cp_rs1_gt_rs2  : coverpoint (instr.rs1_value > instr.rs2_value);
-    cp_rs1_eq_rs2  : coverpoint (instr.rs1_value == instr.rs2_value) {
-      bins equal = {1};
-    }
-  `CG_END
-
-  // Sign-extend instructions (sext.b, sext.h)
-  `B_R_INSTR_NO_RS2_CG_BEGIN(sext_b)
-  `CG_END
-
-  `B_R_INSTR_NO_RS2_CG_BEGIN(sext_h)
-  `CG_END
-
-  // Single-bit instructions (sbset, sbclr, sbinv, sbext)
-  `B_R_INSTR_CG_BEGIN(sbset)
-    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(sbclr)
-    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(sbinv)
-    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(sbext)
-    `CP_VALUE_RANGE(bit_location, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(sbseti)
-    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(sbclri)
-    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(sbinvi)
-    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(sbexti)
-    `CP_VALUE_RANGE(bit_location, instr.imm, 0, XLEN-1)
   `CG_END
 
   // Shift Ones (Left/Right) (slo, sloi, sro, sroi)
@@ -756,31 +1131,6 @@ class riscv_instr_cover_group;
 
   `B_I_INSTR_CG_BEGIN(sroiw)
     `CP_VALUE_RANGE(num_ones_shift, instr.imm, 0, XLEN/2-1)
-  `CG_END
-
-  // Rotate (Left/Right) (rol, ror, rori)
-  `B_R_INSTR_CG_BEGIN(ror)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(rol)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(rori)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.imm, 0, XLEN-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(rorw)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN/2-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(rolw)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.rs2_value, 0, XLEN/2-1)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(roriw)
-    `CP_VALUE_RANGE(num_bit_rotate, instr.imm, 0, XLEN/2-1)
   `CG_END
 
   // Generalized Reverse (grev, grevi, rev)
@@ -881,34 +1231,16 @@ class riscv_instr_cover_group;
     `CP_VALUE_RANGE(offset, instr.rs2_value[20:16], 0, XLEN/2-1)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(bext)
+  `B_R_INSTR_CG_BEGIN(bcompress)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(bextw)
+  `B_R_INSTR_CG_BEGIN(bcompressw)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(bdep)
+  `B_R_INSTR_CG_BEGIN(bdecompress)
   `CG_END
 
-  `B_R_INSTR_CG_BEGIN(bdepw)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmul)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmulh)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmulr)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmulw)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmulhw)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(clmulrw)
+  `B_R_INSTR_CG_BEGIN(bdecompressw)
   `CG_END
 
   `B_R_INSTR_NO_RS2_CG_BEGIN(crc32_b)
@@ -974,25 +1306,6 @@ class riscv_instr_cover_group;
   `B_I_INSTR_CG_BEGIN(fsriw)
     cp_rs3 : coverpoint instr.rs3;
     `CP_VALUE_RANGE(num_shift, instr.imm, 0, XLEN/2-1)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(addwu)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(subwu)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(addiwu)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(addu_w)
-  `CG_END
-
-  `B_R_INSTR_CG_BEGIN(subu_w)
-  `CG_END
-
-  `B_I_INSTR_CG_BEGIN(slliu_w)
-    `CP_VALUE_RANGE(num_shift, instr.imm, 0, XLEN-1)
   `CG_END
 
   // CSR instructions
@@ -1462,8 +1775,6 @@ class riscv_instr_cover_group;
   function new(riscv_instr_gen_config cfg);
     string opts;
     this.cfg = cfg;
-    cur_instr = riscv_instr::type_id::create("cur_instr");
-    pre_instr = riscv_instr::type_id::create("pre_instr");
     build_instr_list();
     `ifdef COMPLIANCE_MODE
       compliance_mode = 1;
@@ -1659,105 +1970,180 @@ class riscv_instr_cover_group;
       fnmadd_s_cg = new();
       fmsub_s_cg  = new();
       fnmsub_s_cg = new();
+      fcvt_w_s_cg  = new();
+      fcvt_wu_s_cg = new();
+      fcvt_s_w_cg  = new();
+      fcvt_s_wu_cg = new();
+      fsgnj_s_cg   = new();
+      fsgnjn_s_cg  = new();
+      fsgnjx_s_cg  = new();
+      fmv_x_w_cg   = new();
+      fmv_w_x_cg   = new();
+      feq_s_cg     = new();
+      flt_s_cg     = new();
+      fle_s_cg     = new();
+      fclass_s_cg  = new();
+    `CG_SELECTOR_END
+
+    `CG_SELECTOR_BEGIN(RV32D)
+      fld_cg      = new();
+      fsd_cg      = new();
+      fadd_d_cg   = new();
+      fsub_d_cg   = new();
+      fdiv_d_cg   = new();
+      fmul_d_cg   = new();
+      fmadd_d_cg  = new();
+      fnmadd_d_cg = new();
+      fmsub_d_cg  = new();
+      fnmsub_d_cg = new();
+      fsqrt_d_cg  = new();
+      fmin_d_cg   = new();
+      fmax_d_cg   = new();
+      fsgnj_d_cg   = new();
+      fsgnjn_d_cg  = new();
+      fsgnjx_d_cg  = new();
+      feq_d_cg     = new();
+      flt_d_cg     = new();
+      fle_d_cg     = new();
+      fcvt_w_d_cg  = new();
+      fcvt_wu_d_cg = new();
+      fcvt_d_w_cg  = new();
+      fcvt_d_wu_cg = new();
+      fclass_d_cg  = new();
+    `CG_SELECTOR_END
+
+    `CG_SELECTOR_BEGIN(RV64F)
+      fcvt_l_s_cg  = new();
+      fcvt_lu_s_cg = new();
+      fcvt_s_l_cg  = new();
+      fcvt_s_lu_cg = new();
+    `CG_SELECTOR_END
+
+    `CG_SELECTOR_BEGIN(RV64D)
+      fmv_x_d_cg   = new();
+      fmv_d_x_cg   = new();
+      fcvt_d_s_cg  = new();
+      fcvt_s_d_cg  = new();
+      fcvt_l_d_cg  = new();
+      fcvt_lu_d_cg = new();
+      fcvt_d_l_cg  = new();
+      fcvt_d_lu_cg = new();
+    `CG_SELECTOR_END
+
+    `CG_SELECTOR_BEGIN(RV32ZBA)
+      sh1add_cg = new();
+      sh2add_cg = new();
+      sh3add_cg = new();
+    `CG_SELECTOR_END
+    `CG_SELECTOR_BEGIN(RV32ZBB)
+      andn_cg   = new();
+      clz_cg    = new();
+      cpop_cg   = new();
+      ctz_cg    = new();
+      max_cg    = new();
+      maxu_cg   = new();
+      min_cg    = new();
+      minu_cg   = new();
+      orc_b_cg  = new();
+      orn_cg    = new();
+      rev8_cg   = new();
+      rol_cg    = new();
+      ror_cg    = new();
+      rori_cg   = new();
+      sext_b_cg = new();
+      sext_h_cg = new();
+      xnor_cg   = new();
+      zext_h_cg = new();
+    `CG_SELECTOR_END
+    `CG_SELECTOR_BEGIN(RV32ZBC)
+      clmul_cg  = new();
+      clmulh_cg = new();
+      clmulr_cg = new();
+    `CG_SELECTOR_END
+    `CG_SELECTOR_BEGIN(RV32ZBS)
+      bclr_cg   = new();
+      bclri_cg  = new();
+      bext_cg   = new();
+      bexti_cg  = new();
+      binv_cg   = new();
+      binvi_cg  = new();
+      bset_cg   = new();
+      bseti_cg  = new();
     `CG_SELECTOR_END
 
     `CG_SELECTOR_BEGIN(RV32B)
-      clz_cg      = new();
-      ctz_cg      = new();
-      pcnt_cg     = new();
-      andn_cg     = new();
-      orn_cg      = new();
-      xnor_cg     = new();
-      pack_cg     = new();
-      packh_cg    = new();
-      min_cg      = new();
-      max_cg      = new();
-      minu_cg     = new();
-      maxu_cg     = new();
-      sext_b_cg   = new();
-      sext_h_cg   = new();
-      sbset_cg    = new();
-      sbclr_cg    = new();
-      sbinv_cg    = new();
-      sbext_cg    = new();
-      sbseti_cg   = new();
-      sbclri_cg   = new();
-      sbinvi_cg   = new();
-      sbexti_cg   = new();
-      slo_cg      = new();
-      sro_cg      = new();
-      sloi_cg     = new();
-      sroi_cg     = new();
-      ror_cg      = new();
-      rol_cg      = new();
-      rori_cg     = new();
-      grev_cg     = new();
-      grevi_cg    = new();
-      shfli_cg    = new();
-      unshfli_cg  = new();
-      shfl_cg     = new();
-      unshfl_cg   = new();
-      gorc_cg     = new();
-      gorci_cg    = new();
-      bfp_cg      = new();
-      bext_cg     = new();
-      bdep_cg     = new();
-      clmul_cg    = new();
-      clmulh_cg   = new();
-      clmulr_cg   = new();
-      crc32_b_cg  = new();
-      crc32_h_cg  = new();
-      crc32_w_cg  = new();
-      crc32c_b_cg = new();
-      crc32c_h_cg = new();
-      crc32c_w_cg = new();
-      cmix_cg     = new();
-      cmov_cg     = new();
-      fsl_cg      = new();
-      fsr_cg      = new();
-      fsri_cg     = new();
+      pack_cg        = new();
+      packh_cg       = new();
+      slo_cg         = new();
+      sro_cg         = new();
+      sloi_cg        = new();
+      sroi_cg        = new();
+      grev_cg        = new();
+      grevi_cg       = new();
+      shfli_cg       = new();
+      unshfli_cg     = new();
+      shfl_cg        = new();
+      unshfl_cg      = new();
+      gorc_cg        = new();
+      gorci_cg       = new();
+      bfp_cg         = new();
+      bcompress_cg   = new();
+      bdecompress_cg = new();
+      crc32_b_cg     = new();
+      crc32_h_cg     = new();
+      crc32_w_cg     = new();
+      crc32c_b_cg    = new();
+      crc32c_h_cg    = new();
+      crc32c_w_cg    = new();
+      cmix_cg        = new();
+      cmov_cg        = new();
+      fsl_cg         = new();
+      fsr_cg         = new();
+      fsri_cg        = new();
+    `CG_SELECTOR_END
+
+    `CG_SELECTOR_BEGIN(RV64ZBA)
+        add_uw_cg          = new();
+        sh1add_uw_cg       = new();
+        sh2add_uw_cg       = new();
+        sh3add_uw_cg       = new();
+        slli_uw_cg         = new();
+    `CG_SELECTOR_END
+    `CG_SELECTOR_BEGIN(RV64ZBB)
+        clzw_cg           = new();
+        cpopw_cg          = new();
+        ctzw_cg           = new();
+        rolw_cg           = new();
+        rorw_cg           = new();
+        roriw_cg          = new();
     `CG_SELECTOR_END
 
     `CG_SELECTOR_BEGIN(RV64B)
-      clzw_cg     = new();
-      ctzw_cg     = new();
-      pcntw_cg    = new();
-      packw_cg    = new();
-      packuw_cg   = new();
-      slow_cg     = new();
-      srow_cg     = new();
-      sloiw_cg    = new();
-      sroiw_cg    = new();
-      rorw_cg     = new();
-      rolw_cg     = new();
-      roriw_cg    = new();
-      grevw_cg    = new();
-      greviw_cg   = new();
-      shflw_cg    = new();
-      unshflw_cg  = new();
-      gorcw_cg    = new();
-      gorciw_cg   = new();
-      bfpw_cg     = new();
-      bextw_cg    = new();
-      bdepw_cg    = new();
-      clmulw_cg   = new();
-      clmulhw_cg  = new();
-      clmulrw_cg  = new();
-      crc32_d_cg  = new();
-      crc32c_d_cg = new();
-      bmator_cg   = new();
-      bmatxor_cg  = new();
-      bmatflip_cg = new();
-      fslw_cg     = new();
-      fsrw_cg     = new();
-      fsriw_cg    = new();
-      addwu_cg    = new();
-      subwu_cg    = new();
-      addiwu_cg   = new();
-      addu_w_cg   = new();
-      subu_w_cg   = new();
-      slliu_w_cg  = new();
+      packw_cg        = new();
+      packuw_cg       = new();
+      slow_cg         = new();
+      srow_cg         = new();
+      sloiw_cg        = new();
+      sroiw_cg        = new();
+      grevw_cg        = new();
+      greviw_cg       = new();
+      shflw_cg        = new();
+      unshflw_cg      = new();
+      gorcw_cg        = new();
+      gorciw_cg       = new();
+      bfpw_cg         = new();
+      bcompressw_cg   = new();
+      bdecompressw_cg = new();
+      crc32_d_cg      = new();
+      crc32c_d_cg     = new();
+      bmator_cg       = new();
+      bmatxor_cg      = new();
+      bmatflip_cg     = new();
+      fslw_cg         = new();
+      fsrw_cg         = new();
+      fsriw_cg        = new();
     `CG_SELECTOR_END
+
     // Ignore the exception which cannot be covered when running with ISS
     if (iss_mode) begin
       int i;
@@ -1913,48 +2299,110 @@ class riscv_instr_cover_group;
       C_ADDW     : `SAMPLE(c_addw_cg, instr)
       C_ADDIW    : `SAMPLE(c_addiw_cg, instr)
       FLW        : `SAMPLE_F(flw_cg, instr)
+      FLD        : `SAMPLE_F(fld_cg, instr)
       FSW        : `SAMPLE_F(fsw_cg, instr)
+      FSD        : `SAMPLE_F(fsd_cg, instr)
       FADD_S     : `SAMPLE_F(fadd_s_cg, instr)
+      FADD_D     : `SAMPLE_F(fadd_d_cg, instr)
       FSUB_S     : `SAMPLE_F(fsub_s_cg, instr)
+      FSUB_D     : `SAMPLE_F(fsub_d_cg, instr)
       FMUL_S     : `SAMPLE_F(fmul_s_cg, instr)
+      FMUL_D     : `SAMPLE_F(fmul_d_cg, instr)
       FDIV_S     : `SAMPLE_F(fdiv_s_cg, instr)
+      FDIV_D     : `SAMPLE_F(fdiv_d_cg, instr)
       FSQRT_S    : `SAMPLE_F(fsqrt_s_cg, instr)
+      FSQRT_D    : `SAMPLE_F(fsqrt_d_cg, instr)
       FMIN_S     : `SAMPLE_F(fmin_s_cg, instr)
+      FMIN_D     : `SAMPLE_F(fmin_d_cg, instr)
       FMAX_S     : `SAMPLE_F(fmax_s_cg, instr)
+      FMAX_D     : `SAMPLE_F(fmax_d_cg, instr)
       FMADD_S    : `SAMPLE_F(fmadd_s_cg, instr)
+      FMADD_D    : `SAMPLE_F(fmadd_d_cg, instr)
       FNMADD_S   : `SAMPLE_F(fnmadd_s_cg, instr)
+      FNMADD_D   : `SAMPLE_F(fnmadd_d_cg, instr)
       FMSUB_S    : `SAMPLE_F(fmsub_s_cg, instr)
+      FMSUB_D    : `SAMPLE_F(fmsub_d_cg, instr)
       FNMSUB_S   : `SAMPLE_F(fnmsub_s_cg, instr)
+      FNMSUB_D   : `SAMPLE_F(fnmsub_d_cg, instr)
+      FCVT_W_S   : `SAMPLE_F(fcvt_w_s_cg, instr)
+      FCVT_WU_S  : `SAMPLE_F(fcvt_wu_s_cg, instr)
+      FCVT_L_S   : `SAMPLE_F(fcvt_l_s_cg, instr)
+      FCVT_LU_S  : `SAMPLE_F(fcvt_lu_s_cg, instr)
+      FCVT_L_D   : `SAMPLE_F(fcvt_l_d_cg, instr)
+      FCVT_LU_D  : `SAMPLE_F(fcvt_lu_d_cg, instr)
+      FCVT_S_D   : `SAMPLE_F(fcvt_s_d_cg, instr)
+      FCVT_D_S   : `SAMPLE_F(fcvt_d_s_cg, instr)
+      FCVT_W_D   : `SAMPLE_F(fcvt_w_d_cg, instr)
+      FCVT_WU_D  : `SAMPLE_F(fcvt_wu_d_cg, instr)
+      FCVT_S_W   : `SAMPLE_F(fcvt_s_w_cg, instr)
+      FCVT_S_WU  : `SAMPLE_F(fcvt_s_wu_cg, instr)
+      FCVT_S_L   : `SAMPLE_F(fcvt_s_l_cg, instr)
+      FCVT_D_L   : `SAMPLE_F(fcvt_d_l_cg, instr)
+      FCVT_S_LU  : `SAMPLE_F(fcvt_s_lu_cg, instr)
+      FCVT_D_W   : `SAMPLE_F(fcvt_d_w_cg, instr)
+      FCVT_D_LU  : `SAMPLE_F(fcvt_d_lu_cg, instr)
+      FCVT_D_WU  : `SAMPLE_F(fcvt_d_wu_cg, instr)
+      FSGNJ_S    : `SAMPLE_F(fsgnj_s_cg, instr)
+      FSGNJ_D    : `SAMPLE_F(fsgnj_d_cg, instr)
+      FSGNJN_S   : `SAMPLE_F(fsgnjn_s_cg, instr)
+      FSGNJN_D   : `SAMPLE_F(fsgnjn_d_cg, instr)
+      FSGNJX_S   : `SAMPLE_F(fsgnjx_s_cg, instr)
+      FSGNJX_D   : `SAMPLE_F(fsgnjx_d_cg, instr)
+      FMV_X_W    : `SAMPLE_F(fmv_x_w_cg, instr)
+      FMV_X_D    : `SAMPLE_F(fmv_x_d_cg, instr)
+      FMV_W_X    : `SAMPLE_F(fmv_w_x_cg, instr)
+      FMV_D_X    : `SAMPLE_F(fmv_d_x_cg, instr)
+      FEQ_S      : `SAMPLE_F(feq_s_cg, instr)
+      FEQ_D      : `SAMPLE_F(feq_d_cg, instr)
+      FLT_S      : `SAMPLE_F(flt_s_cg, instr)
+      FLT_D      : `SAMPLE_F(flt_d_cg, instr)
+      FLE_S      : `SAMPLE_F(fle_s_cg, instr)
+      FLE_D      : `SAMPLE_F(fle_d_cg, instr)
+      FCLASS_S   : `SAMPLE_F(fclass_s_cg, instr)
+      FCLASS_D   : `SAMPLE_F(fclass_d_cg, instr)
+      // RV32ZBA
+      SH1ADD     : `SAMPLE_ZBA(sh1add_cg, instr)
+      SH2ADD     : `SAMPLE_ZBA(sh2add_cg, instr)
+      SH3ADD     : `SAMPLE_ZBA(sh3add_cg, instr)
+      // RV32ZBB
+      ANDN       : `SAMPLE_ZBB(andn_cg, instr)
+      CLZ        : `SAMPLE_ZBB(clz_cg, instr)
+      CPOP       : `SAMPLE_ZBB(cpop_cg, instr)
+      CTZ        : `SAMPLE_ZBB(ctz_cg, instr)
+      MAX        : `SAMPLE_ZBB(max_cg, instr)
+      MAXU       : `SAMPLE_ZBB(maxu_cg, instr)
+      MIN        : `SAMPLE_ZBB(min_cg, instr)
+      MINU       : `SAMPLE_ZBB(minu_cg, instr)
+      ORC_B      : `SAMPLE_ZBB(orc_b_cg, instr)
+      ORN        : `SAMPLE_ZBB(orn_cg, instr)
+      REV8       : `SAMPLE_ZBB(rev8_cg, instr)
+      ROL        : `SAMPLE_ZBB(rol_cg, instr)
+      ROR        : `SAMPLE_ZBB(ror_cg, instr)
+      RORI       : `SAMPLE_ZBB(rori_cg, instr)
+      SEXT_B     : `SAMPLE_ZBB(sext_b_cg, instr)
+      SEXT_H     : `SAMPLE_ZBB(sext_h_cg, instr)
+      XNOR       : `SAMPLE_ZBB(xnor_cg, instr)
+      ZEXT_H     : `SAMPLE_ZBB(zext_h_cg, instr)
+      // RV32ZBC
+      CLMUL      : `SAMPLE_ZBC(clmul_cg, instr)
+      CLMULH     : `SAMPLE_ZBC(clmulh_cg, instr)
+      CLMULR     : `SAMPLE_ZBC(clmulr_cg, instr)
+      // RV32ZBS
+      BCLR       : `SAMPLE_ZBS(bclr_cg, instr)
+      BCLRI      : `SAMPLE_ZBS(bclri_cg, instr)
+      BEXT       : `SAMPLE_ZBS(bext_cg, instr)
+      BEXTI      : `SAMPLE_ZBS(bexti_cg, instr)
+      BINV       : `SAMPLE_ZBS(binv_cg, instr)
+      BINVI      : `SAMPLE_ZBS(binvi_cg, instr)
+      BSET       : `SAMPLE_ZBS(bset_cg, instr)
+      BSETI      : `SAMPLE_ZBS(bseti_cg, instr)
       // RV32B
-      CLZ        : `SAMPLE_B(clz_cg, instr)
-      CTZ        : `SAMPLE_B(ctz_cg, instr)
-      PCNT       : `SAMPLE_B(pcnt_cg, instr)
-      ANDN       : `SAMPLE_B(andn_cg, instr)
-      ORN        : `SAMPLE_B(orn_cg, instr)
-      XNOR       : `SAMPLE_B(xnor_cg, instr)
       PACK       : `SAMPLE_B(pack_cg, instr)
       PACKH      : `SAMPLE_B(packh_cg, instr)
-      MIN        : `SAMPLE_B(min_cg, instr)
-      MAX        : `SAMPLE_B(max_cg, instr)
-      MINU       : `SAMPLE_B(minu_cg, instr)
-      MAXU       : `SAMPLE_B(maxu_cg, instr)
-      SEXT_B     : `SAMPLE_B(sext_b_cg, instr)
-      SEXT_H     : `SAMPLE_B(sext_h_cg, instr)
-      SBSET      : `SAMPLE_B(sbset_cg, instr)
-      SBCLR      : `SAMPLE_B(sbclr_cg, instr)
-      SBINV      : `SAMPLE_B(sbinv_cg, instr)
-      SBEXT      : `SAMPLE_B(sbext_cg, instr)
-      SBSETI     : `SAMPLE_B(sbseti_cg, instr)
-      SBCLRI     : `SAMPLE_B(sbclri_cg, instr)
-      SBINVI     : `SAMPLE_B(sbinvi_cg, instr)
-      SBEXTI     : `SAMPLE_B(sbexti_cg, instr)
       SLO        : `SAMPLE_B(slo_cg, instr)
       SRO        : `SAMPLE_B(sro_cg, instr)
       SLOI       : `SAMPLE_B(sloi_cg, instr)
       SROI       : `SAMPLE_B(sroi_cg, instr)
-      ROR        : `SAMPLE_B(ror_cg, instr)
-      ROL        : `SAMPLE_B(rol_cg, instr)
-      RORI       : `SAMPLE_B(rori_cg, instr)
       GREV       : `SAMPLE_B(grev_cg, instr)
       GREVI      : `SAMPLE_B(grevi_cg, instr)
       SHFLI      : `SAMPLE_B(shfli_cg, instr)
@@ -1964,11 +2412,8 @@ class riscv_instr_cover_group;
       GORC       : `SAMPLE_B(gorc_cg, instr)
       GORCI      : `SAMPLE_B(gorci_cg, instr)
       BFP        : `SAMPLE_B(bfp_cg, instr)
-      BEXT       : `SAMPLE_B(bext_cg, instr)
-      BDEP       : `SAMPLE_B(bdep_cg, instr)
-      CLMUL      : `SAMPLE_B(clmul_cg, instr)
-      CLMULH     : `SAMPLE_B(clmulh_cg, instr)
-      CLMULR     : `SAMPLE_B(clmulr_cg, instr)
+      BCOMPRESS  : `SAMPLE_B(bcompress_cg, instr)
+      BDECOMPRESS: `SAMPLE_B(bdecompress_cg, instr)
       CRC32_B    : `SAMPLE_B(crc32_b_cg, instr)
       CRC32_H    : `SAMPLE_B(crc32_h_cg, instr)
       CRC32_W    : `SAMPLE_B(crc32_w_cg, instr)
@@ -1980,45 +2425,43 @@ class riscv_instr_cover_group;
       FSL        : `SAMPLE_B(fsl_cg, instr)
       FSR        : `SAMPLE_B(fsr_cg, instr)
       FSRI       : `SAMPLE_B(fsri_cg, instr)
+      // RV64ZBA
+      ADD_UW        : `SAMPLE_ZBA(add_uw_cg, instr)
+      SH1ADD_UW     : `SAMPLE_ZBA(sh1add_uw_cg, instr)
+      SH2ADD_UW     : `SAMPLE_ZBA(sh2add_uw_cg, instr)
+      SH3ADD_UW     : `SAMPLE_ZBA(sh3add_uw_cg, instr)
+      SLLI_UW       : `SAMPLE_ZBA(slli_uw_cg, instr)
+      // RV64ZBB
+      CLZW         : `SAMPLE_ZBB(clzw_cg, instr)
+      CPOPW        : `SAMPLE_ZBB(cpopw_cg, instr)
+      CTZW         : `SAMPLE_ZBB(ctzw_cg, instr)
+      ROLW         : `SAMPLE_ZBB(rolw_cg, instr)
+      RORW         : `SAMPLE_ZBB(rorw_cg, instr)
+      RORIW        : `SAMPLE_ZBB(roriw_cg, instr)
       // RV64B
-      CLZW       : `SAMPLE_B(clzw_cg, instr)
-      CTZW       : `SAMPLE_B(ctzw_cg, instr)
-      PCNTW      : `SAMPLE_B(pcntw_cg, instr)
-      PACKW      : `SAMPLE_B(packw_cg, instr)
-      PACKUW     : `SAMPLE_B(packuw_cg, instr)
-      SLOW       : `SAMPLE_B(slow_cg, instr)
-      SROW       : `SAMPLE_B(srow_cg, instr)
-      SLOIW      : `SAMPLE_B(sloiw_cg, instr)
-      SROIW      : `SAMPLE_B(sroiw_cg, instr)
-      RORW       : `SAMPLE_B(rorw_cg, instr)
-      ROLW       : `SAMPLE_B(rolw_cg, instr)
-      RORIW      : `SAMPLE_B(roriw_cg, instr)
-      GREVW      : `SAMPLE_B(grevw_cg, instr)
-      GREVIW     : `SAMPLE_B(greviw_cg, instr)
-      SHFLW      : `SAMPLE_B(shflw_cg, instr)
-      UNSHFLW    : `SAMPLE_B(unshflw_cg, instr)
-      GORCW      : `SAMPLE_B(gorcw_cg, instr)
-      GORCIW     : `SAMPLE_B(gorciw_cg, instr)
-      BFPW       : `SAMPLE_B(bfpw_cg, instr)
-      BEXTW      : `SAMPLE_B(bextw_cg, instr)
-      BDEPW      : `SAMPLE_B(bdepw_cg, instr)
-      CLMULW     : `SAMPLE_B(clmulw_cg, instr)
-      CLMULHW    : `SAMPLE_B(clmulhw_cg, instr)
-      CLMULRW    : `SAMPLE_B(clmulrw_cg, instr)
-      CRC32_D    : `SAMPLE_B(crc32_d_cg, instr)
-      CRC32C_D   : `SAMPLE_B(crc32c_d_cg, instr)
-      BMATOR     : `SAMPLE_B(bmator_cg, instr)
-      BMATXOR    : `SAMPLE_B(bmatxor_cg, instr)
-      BMATFLIP   : `SAMPLE_B(bmatflip_cg, instr)
-      FSLW       : `SAMPLE_B(fslw_cg, instr)
-      FSRW       : `SAMPLE_B(fsrw_cg, instr)
-      FSRIW      : `SAMPLE_B(fsriw_cg, instr)
-      ADDWU      : `SAMPLE_B(addwu_cg, instr)
-      SUBWU      : `SAMPLE_B(subwu_cg, instr)
-      ADDIWU     : `SAMPLE_B(addiwu_cg, instr)
-      ADDU_W     : `SAMPLE_B(addu_w_cg, instr)
-      SUBU_W     : `SAMPLE_B(subu_w_cg, instr)
-      SLLIU_W    : `SAMPLE_B(slliu_w_cg, instr)
+      PACKW        : `SAMPLE_B(packw_cg, instr)
+      PACKUW       : `SAMPLE_B(packuw_cg, instr)
+      SLOW         : `SAMPLE_B(slow_cg, instr)
+      SROW         : `SAMPLE_B(srow_cg, instr)
+      SLOIW        : `SAMPLE_B(sloiw_cg, instr)
+      SROIW        : `SAMPLE_B(sroiw_cg, instr)
+      GREVW        : `SAMPLE_B(grevw_cg, instr)
+      GREVIW       : `SAMPLE_B(greviw_cg, instr)
+      SHFLW        : `SAMPLE_B(shflw_cg, instr)
+      UNSHFLW      : `SAMPLE_B(unshflw_cg, instr)
+      GORCW        : `SAMPLE_B(gorcw_cg, instr)
+      GORCIW       : `SAMPLE_B(gorciw_cg, instr)
+      BFPW         : `SAMPLE_B(bfpw_cg, instr)
+      BCOMPRESSW   : `SAMPLE_B(bcompressw_cg, instr)
+      BDECOMPRESSW : `SAMPLE_B(bdecompressw_cg, instr)
+      CRC32_D      : `SAMPLE_B(crc32_d_cg, instr)
+      CRC32C_D     : `SAMPLE_B(crc32c_d_cg, instr)
+      BMATOR       : `SAMPLE_B(bmator_cg, instr)
+      BMATXOR      : `SAMPLE_B(bmatxor_cg, instr)
+      BMATFLIP     : `SAMPLE_B(bmatflip_cg, instr)
+      FSLW         : `SAMPLE_B(fslw_cg, instr)
+      FSRW         : `SAMPLE_B(fsrw_cg, instr)
+      FSRIW        : `SAMPLE_B(fsriw_cg, instr)
       `VECTOR_INCLUDE("riscv_instr_cover_group_inc_cg_sample.sv")
       default: begin
         if (instr.group == RV32I) begin
@@ -2068,8 +2511,7 @@ class riscv_instr_cover_group;
       end
     end
    `VECTOR_INCLUDE("riscv_instr_cover_group_inc_sample.sv")
-    pre_instr.copy(instr);
-    pre_instr.mem_addr = instr.mem_addr;
+    pre_instr = instr;
   endfunction
 
   // Check if the instruction is supported
@@ -2096,11 +2538,14 @@ class riscv_instr_cover_group;
     instr_name = instr_name.first;
     do begin
       riscv_instr instr;
-      if (!(instr_name inside {unsupported_instr}) && (instr_name != INVALID_INSTR)) begin
+      if (!(instr_name inside {unsupported_instr}) && (instr_name != INVALID_INSTR) &&
+          riscv_instr::instr_registry.exists(instr_name)) begin
         instr = riscv_instr::create_instr(instr_name);
         if ((instr.group inside {supported_isa}) &&
             (instr.group inside {RV32I, RV32M, RV64M, RV64I, RV32C, RV64C,
-                                 RV32V, RV64V, RV64B, RV32B})) begin
+                                 RVV, RV64B, RV32B,
+                                 RV32ZBA, RV32ZBB, RV32ZBC, RV32ZBS,
+                                 RV64ZBA, RV64ZBB, RV64ZBC, RV64ZBS})) begin
           if (((instr_name inside {URET}) && !support_umode_trap) ||
               ((instr_name inside {SRET, SFENCE_VMA}) &&
               !(SUPERVISOR_MODE inside {supported_privileged_mode})) ||

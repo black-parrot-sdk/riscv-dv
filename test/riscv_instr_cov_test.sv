@@ -7,10 +7,11 @@ class riscv_instr_cov_test extends uvm_test;
   riscv_instr_cover_group   instr_cg;
   string                    trace_csv[$];
   string                    trace[string];
+  bit                       report_illegal_instr;
   int unsigned              entry_cnt;
   int unsigned              total_entry_cnt;
   int unsigned              skipped_cnt;
-  int unsigned              unexpected_illegal_instr_cnt;
+  int unsigned              illegal_instr_cnt;
 
   `uvm_component_utils(riscv_instr_cov_test)
   `uvm_component_new
@@ -23,6 +24,7 @@ class riscv_instr_cov_test extends uvm_test;
     string header[$];
     string entry[$];
     int fd;
+    void'($value$plusargs("report_illegal_instr=%0d", report_illegal_instr));
     while(1) begin
       args = {$sformatf("trace_csv_%0d", i), "=%s"};
       if ($value$plusargs(args, csv)) begin
@@ -36,15 +38,13 @@ class riscv_instr_cov_test extends uvm_test;
     // disable_compressed_instr is not relevant to coverage test
     cfg.disable_compressed_instr = 0;
     riscv_instr::create_instr_list(cfg);
+    riscv_csr_instr::create_csr_filter(cfg);
     instr_cg = new(cfg);
     `uvm_info(`gfn, $sformatf("%0d CSV trace files to be processed", trace_csv.size()), UVM_LOW)
     foreach (trace_csv[i]) begin
       bit expect_illegal_instr;
       entry_cnt = 0;
       instr_cg.reset();
-      if (uvm_is_match("*illegal*", trace_csv[i])) begin
-        expect_illegal_instr = 1;
-      end
       `uvm_info(`gfn, $sformatf("Processing CSV trace[%0d]: %s", i, trace_csv[i]), UVM_LOW)
       fd = $fopen(trace_csv[i], "r");
       if (fd) begin
@@ -79,11 +79,11 @@ class riscv_instr_cov_test extends uvm_test;
               continue;
             end
             if (!sample()) begin
-              if (!expect_illegal_instr) begin
+              if (report_illegal_instr) begin
                `uvm_error(`gfn, $sformatf("Found unexpected illegal instr: %0s [%0s]",
                                           trace["instr"], line))
-                unexpected_illegal_instr_cnt++;
               end
+              illegal_instr_cnt++;
             end
           end
           entry_cnt += 1;
@@ -97,9 +97,9 @@ class riscv_instr_cov_test extends uvm_test;
     end
     `uvm_info(`gfn, $sformatf("Finished processing %0d trace CSV, %0d instructions",
                      trace_csv.size(), total_entry_cnt), UVM_LOW)
-    if ((skipped_cnt > 0) || (unexpected_illegal_instr_cnt > 0)) begin
+    if ((skipped_cnt > 0) || ((illegal_instr_cnt > 0) && report_illegal_instr)) begin
       `uvm_error(`gfn, $sformatf("%0d instructions skipped, %0d illegal instruction",
-                       skipped_cnt, unexpected_illegal_instr_cnt))
+                       skipped_cnt, illegal_instr_cnt))
 
     end else begin
       `uvm_info(`gfn, "TEST PASSED", UVM_NONE);
@@ -131,12 +131,15 @@ class riscv_instr_cov_test extends uvm_test;
       if (riscv_instr::instr_template.exists(instr_name)) begin
         riscv_instr instr;
         instr = riscv_instr::get_instr(instr_name);
-        if (instr.group inside {RV32I, RV32M, RV32C, RV64I, RV64M, RV64C,
-                                RV32F, RV32B, RV64B}) begin
+        if ((instr.group inside {RV32I, RV32M, RV32C, RV64I, RV64M, RV64C,
+                                 RV32F, RV64F, RV32D, RV64D, RV32B, RV64B,
+                                 RV32ZBA, RV32ZBB, RV32ZBC, RV32ZBS,
+                                 RV64ZBA, RV64ZBB, RV64ZBC, RV64ZBS}) &&
+            (instr.group inside {supported_isa})) begin
           assign_trace_info_to_instr(instr);
+          instr.pre_sample();
+          instr_cg.sample(instr);
         end
-        instr.pre_sample();
-        instr_cg.sample(instr);
         return 1'b1;
       end
     end
@@ -177,6 +180,27 @@ class riscv_instr_cov_test extends uvm_test;
         instr_name[i] = "_";
       end
     end
+
+    case (instr_name)
+      // rename to new name as ovpsim still uses old name
+     "FMV_S_X": instr_name = "FMV_W_X";
+     "FMV_X_S": instr_name = "FMV_X_W";
+      // convert Pseudoinstructions
+      // fmv.s rd, rs fsgnj.s rd, rs, rs Copy single-precision register
+      // fabs.s rd, rs fsgnjx.s rd, rs, rs Single-precision absolute value
+      // fneg.s rd, rs fsgnjn.s rd, rs, rs Single-precision negate
+      // fmv.d rd, rs fsgnj.d rd, rs, rs Copy double-precision register
+      // fabs.d rd, rs fsgnjx.d rd, rs, rs Double-precision absolute value
+      // fneg.d rd, rs fsgnjn.d rd, rs, rs Double-precision negate
+      "FMV_S":  instr_name = "FSGNJ_S";
+      "FABS_S": instr_name = "FSGNJX_S";
+      "FNEG_S": instr_name = "FSGNJN_S";
+      "FMV_D":  instr_name = "FSGNJ_D";
+      "FABS_D": instr_name = "FSGNJX_D";
+      "FNEG_D": instr_name = "FSGNJN_D";
+      default: ;
+    endcase
+
     return instr_name;
   endfunction : process_instr_name
 

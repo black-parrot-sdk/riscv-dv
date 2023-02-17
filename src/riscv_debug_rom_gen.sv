@@ -93,8 +93,12 @@ class riscv_debug_rom_gen extends riscv_asm_program_gen;
                     cfg.num_debug_sub_program);
       main_program[hart].post_process_instr();
       main_program[hart].generate_instr_stream(.no_label(1'b1));
+      debug_main = {debug_main,
+                    main_program[hart].instr_string_list,
+                    $sformatf("%sla x%0d, debug_end", indent, cfg.scratch_reg),
+                    $sformatf("%sjalr x0, x%0d, 0", indent, cfg.scratch_reg)
+                   };
       insert_sub_program(sub_program[hart], debug_main);
-      debug_main = {debug_main, main_program[hart].instr_string_list};
       gen_section($sformatf("%0sdebug_rom", hart_prefix(hart)), debug_main);
       if (cfg.enable_ebreak_in_debug_rom) begin
         gen_ebreak_footer();
@@ -223,17 +227,17 @@ class riscv_debug_rom_gen extends riscv_asm_program_gen;
   virtual function void gen_dcsr_ebreak();
     if (MACHINE_MODE inside {riscv_instr_pkg::supported_privileged_mode}) begin
       str = {$sformatf("li x%0d, 0x8000", cfg.scratch_reg),
-             $sformatf("csrs dcsr, x%0d", cfg.scratch_reg)};
+             $sformatf("csrs 0x%0x, x%0d", DCSR, cfg.scratch_reg)};
       debug_main = {debug_main, str};
     end
     if (SUPERVISOR_MODE inside {riscv_instr_pkg::supported_privileged_mode}) begin
       str = {$sformatf("li x%0d, 0x2000", cfg.scratch_reg),
-             $sformatf("csrs dcsr, x%0d", cfg.scratch_reg)};
+             $sformatf("csrs 0x%0x, x%0d", DCSR, cfg.scratch_reg)};
       debug_main = {debug_main, str};
     end
     if (USER_MODE inside {riscv_instr_pkg::supported_privileged_mode}) begin
       str = {$sformatf("li x%0d, 0x1000", cfg.scratch_reg),
-             $sformatf("csrs dcsr, x%0d", cfg.scratch_reg)};
+             $sformatf("csrs 0x%0x, x%0d", DCSR, cfg.scratch_reg)};
       debug_main = {debug_main, str};
     end
   endfunction
