@@ -27,21 +27,10 @@ parameter satp_mode_t SATP_MODE = SV39;
 privileged_mode_t supported_privileged_mode[] = {USER_MODE, SUPERVISOR_MODE, MACHINE_MODE};
 
 // Unsupported instructions
-riscv_instr_name_t unsupported_instr = {MULH, MULHSU, MULHU,
-                                        AMOSWAP_W, AMOSWAP_D,
-                                        AMOADD_W, AMOADD_D,
-                                        AMOAND_W, AMOAND_D,
-                                        AMOOR_W, AMOOR_D,
-                                        AMOXOR_W, AMOXOR_D,
-                                        AMOMAX_W, AMOMAX_D,
-                                        AMOMAXU_W, AMOMAXU_D,
-                                        AMOMIN_W, AMOMIN_D,
-                                        AMOMINU_W, AMOMINU_D};
+riscv_instr_name_t unsupported_instr[];
 
 // ISA supported by the processor
-riscv_instr_group_t supported_isa[$] = {RV32I, RV64I, RV32M, RV64M, RV32A, RV64A};
-//riscv_instr_group_t supported_isa[$] = {RV32I, RV32M, RV64I, RV64M, RV32C, RV64C, RV32A, RV64A,
-//                                        RV32F, RV64F, RV32D, RV64D};
+riscv_instr_group_t supported_isa[$] = {RV32I, RV64I, RV32M, RV64M, RV32A, RV64A, RV32F, RV64F, RV32D, RV64D};
 
 // Interrupt mode support
 mtvec_mode_t supported_interrupt_mode[$] = {DIRECT};
@@ -53,8 +42,11 @@ int max_interrupt_vector_num = 16;
 // Physical memory protection support
 bit support_pmp = 0;
 
+// Enhanced physical memory protection support
+bit support_epmp = 0;
+
 // Debug mode support
-bit support_debug_mode = 0;
+bit support_debug_mode = 1;
 
 // Support delegate trap to user mode
 bit support_umode_trap = 0;
@@ -65,13 +57,37 @@ bit support_sfence = 1;
 // Support unaligned load/store
 bit support_unaligned_load_store = 0;
 
+// GPR setting
+parameter int NUM_FLOAT_GPR = 32;
+parameter int NUM_GPR = 32;
+parameter int NUM_VEC_GPR = 32;
+
+// ----------------------------------------------------------------------------
+// Vector extension configuration
+// ----------------------------------------------------------------------------
+
 // Parameter for vector extension
 parameter int VECTOR_EXTENSION_ENABLE = 0;
-parameter int VLEN = 512;
-parameter int ELEN = 64;
-parameter int SLEN = 64;
 
-// NUM_HARTS
+parameter int VLEN = 512;
+
+// Maximum size of a single vector element
+parameter int ELEN = 32;
+
+// Minimum size of a sub-element, which must be at most 8-bits.
+parameter int SELEN = 8;
+
+// Maximum size of a single vector element (encoded in vsew format)
+parameter int VELEN = int'($ln(ELEN)/$ln(2)) - 3;
+
+// Maxium LMUL supported by the core
+parameter int MAX_LMUL = 8;
+
+// ----------------------------------------------------------------------------
+// Multi-harts configuration
+// ----------------------------------------------------------------------------
+
+// Number of harts
 parameter int NUM_HARTS = 1;
 
 // ----------------------------------------------------------------------------
@@ -111,7 +127,13 @@ parameter privileged_reg_t implemented_csr[] = {
     MEPC,       // Machine exception program counter
     MCAUSE,     // Machine trap cause
     MTVAL,      // Machine bad address or instruction
-    MIP         // Machine interrupt pending
+    MIP,        // Machine interrupt pending
+    // Floating point CSR
+    FCSR        // Floating point control and status
+};
+
+// Implementation-specific custom CSRs
+bit [11:0] custom_csr[] = {
 };
 
 // ----------------------------------------------------------------------------
@@ -128,10 +150,7 @@ parameter interrupt_cause_t implemented_interrupt[] = {
     M_SOFTWARE_INTR,
     U_TIMER_INTR,
     S_TIMER_INTR,
-    M_TIMER_INTR,
-    U_EXTERNAL_INTR,
-    S_EXTERNAL_INTR,
-    M_EXTERNAL_INTR
+    M_TIMER_INTR
 };
 
 `ifdef DSIM

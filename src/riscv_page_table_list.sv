@@ -278,9 +278,6 @@ class riscv_page_table_list#(satp_mode_t MODE = SV39) extends uvm_object;
       instr.push_back($sformatf("xori x%0d, x%0d, 0x3", mpp_reg, mpp_reg));
     end
 
-    // Flush TLB to force synchronization
-    instr.push_back("sfence.vma x0, x0");
-
     // Start from root level, top-down fix all related PTEs
     instr.push_back($sformatf("li x%0d, %0d", level_reg, level));
     instr.push_back($sformatf("li x%0d, 0x%0x", mask_reg, bit_mask));

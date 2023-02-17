@@ -166,7 +166,7 @@ class riscv_instr_gen_config extends uvm_object;
   bit                    no_dret = 1;        // No dret instruction
   bit                    no_fence;           // No fence instruction
   bit                    no_wfi = 1;         // No WFI instruction
-  bit                    enable_unaligned_load_store;
+  bit                    enable_unaligned_load_store = 0;
   int                    illegal_instr_ratio;
   int                    hint_instr_ratio;
   // CSR instruction control
