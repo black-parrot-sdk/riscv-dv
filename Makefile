@@ -18,7 +18,7 @@ all: $(addprefix generate., $(RISCVDV_TEST_LIST))
 
 generate.%:
 	$(PYTHON) run.py --steps gen,gcc_compile --simulator vcs --iterations 20 --batch_size 5 -o out/ \
-		-ct user_extension -cs user_extension -tn $* --isa rv64gc --mabi lp64
+		-ct user_extension -cs user_extension -tn $* --isa rv64imafdc --mabi lp64d
 
 clean:
 	rm -rf out*
